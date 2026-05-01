@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tremor-assist"
+version = "0.1.0"
+description = "System-wide mouse smoothing and key/click debounce to help gamers with hand tremors"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "HiddenDirector" }]
+keywords = ["accessibility", "tremor", "gaming", "input", "macos", "one-euro-filter"]
+dependencies = [
+  "pyobjc-framework-Quartz>=10.0",
+  "pyobjc-framework-Cocoa>=10.0",
+]
+
+[project.scripts]
+tremor-assist = "tremor_assist.__main__:main"
+
+[tool.setuptools]
+packages = ["tremor_assist"]
