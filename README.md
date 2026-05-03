@@ -31,14 +31,20 @@ Everything is tunable live, with presets from **Mild** to **Strong**.
 
 ## Quick start
 
+**The easy way:** double-click **`TremorAssist.app`** in Finder. The first
+launch sets itself up automatically (this takes a moment), then the control
+panel opens with a short welcome.
+
+**From the terminal** (equivalent):
+
 ```bash
 cd tremor-assist
 ./run.sh
 ```
 
-`run.sh` creates a virtual environment, installs dependencies, and launches the
-control panel. On first launch macOS will block the event tap until you grant
-Accessibility permission:
+Either way, a virtual environment is created, dependencies are installed, and
+the native control panel opens. On first launch macOS will block the event tap
+until you grant Accessibility permission:
 
 > **System Settings → Privacy & Security → Accessibility** → enable your
 > terminal app → relaunch.
@@ -72,8 +78,10 @@ tremor_assist/
   one_euro.py   Pure-Python One Euro Filter (unit-tested, no platform deps)
   engine.py     Quartz CGEventTap: smooths motion, debounces keys/clicks
   config.py     Settings dataclass, JSON persistence, presets
-  ui.py         Tkinter control panel (live tuning + stats)
+  ui.py         Native macOS (Cocoa/AppKit) control panel — comfort levels,
+                big on/off button, optional fine-tuning, live stats
   __main__.py   GUI / headless entry point
+TremorAssist.app  Double-clickable launcher bundle
 tests/
   test_one_euro.py
 ```

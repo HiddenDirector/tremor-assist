@@ -1,247 +1,465 @@
-"""Tkinter control panel for the tremor-assist engine.
+"""Native macOS (Cocoa/AppKit) control panel for TremorAssist.
 
-Runs on the main thread; the engine's event tap runs on its own thread. The UI
-writes directly into the shared ``Settings`` object, so slider/preset changes
-take effect live without restarting the tap.
+Why AppKit instead of Tkinter: Apple's deprecated system Tk crashes on recent
+macOS versions, and we already depend on pyobjc for the event tap — so the UI
+is built natively. That also gives a real macOS look and feel.
+
+Design goals (users have hand tremors and may not be technical):
+  * Plain language — "Comfort level", not "min_cutoff".
+  * Big targets — a large on/off button and full-width comfort options.
+  * Safe defaults — pick a comfort level and you're done; sliders are tucked
+    behind an optional "Fine-tune" toggle.
+  * Hand-holding — clear status, and a one-click fix if permission is missing.
+
+The AppKit run loop owns the main thread; the engine's event tap runs on its
+own thread. The engine reports status by storing a string that a repeating
+timer (on the main thread) reads, so there are no cross-thread UI calls.
 """
 
 from __future__ import annotations
 
-import subprocess
-import tkinter as tk
-from tkinter import ttk
+import os
+
+import objc
+from AppKit import (
+    NSApplication,
+    NSApplicationActivationPolicyRegular,
+    NSBackingStoreBuffered,
+    NSBezelStyleRegularSquare,
+    NSBox,
+    NSButton,
+    NSColor,
+    NSFont,
+    NSMakeRect,
+    NSOffState,
+    NSOnState,
+    NSRadioButton,
+    NSSlider,
+    NSSwitchButton,
+    NSTextField,
+    NSTimer,
+    NSView,
+    NSWindow,
+    NSWindowStyleMaskClosable,
+    NSWindowStyleMaskMiniaturizable,
+    NSWindowStyleMaskTitled,
+    NSWorkspace,
+)
+from Foundation import NSURL, NSObject
 
 from . import config
 from .config import Settings
-from .engine import TremorEngine
+
+W = 470          # window width
+M = 24           # outer margin
+INNER = W - 2 * M
+
+ACCESS_URL = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+
+PRESET_INFO = {
+    "Mild": "Light touch — smooths small shakes, stays very responsive.",
+    "Moderate": "Balanced — a good starting point for most people.",
+    "Strong": "Maximum steadiness for stronger tremors.",
+    "Off": "No assistance.",
+}
 
 
-def _open_accessibility_pane() -> None:
-    subprocess.run(
-        [
-            "open",
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-        ],
-        check=False,
-    )
+def _rgb(r, g, b):
+    return NSColor.colorWithCalibratedRed_green_blue_alpha_(r / 255, g / 255, b / 255, 1.0)
 
 
-class ControlPanel:
-    def __init__(self, settings: Settings) -> None:
+GREEN = _rgb(30, 166, 114)
+GREY = _rgb(154, 163, 173)
+RED = _rgb(210, 104, 63)
+BLUE = _rgb(47, 123, 232)
+TEXT = _rgb(28, 37, 48)
+MUTED = _rgb(107, 118, 130)
+
+
+def _label(text, size=13, bold=False, color=TEXT):
+    lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 10, 10))
+    lbl.setStringValue_(text)
+    lbl.setEditable_(False)
+    lbl.setBordered_(False)
+    lbl.setDrawsBackground_(False)
+    lbl.setSelectable_(False)
+    font = NSFont.boldSystemFontOfSize_(size) if bold else NSFont.systemFontOfSize_(size)
+    lbl.setFont_(font)
+    lbl.setTextColor_(color)
+    return lbl
+
+
+def _which_preset(settings: Settings):
+    for name, overrides in config.PRESETS.items():
+        if all(getattr(settings, k) == v for k, v in overrides.items()):
+            return name
+    return None
+
+
+class Controller(NSObject):
+    # ---- construction -------------------------------------------------------
+    def initWithSettings_(self, settings):
+        self = objc.super(Controller, self).init()
+        if self is None:
+            return None
+        from .engine import TremorEngine
+
         self.settings = settings
-        self.engine = TremorEngine(settings, on_status=self._on_engine_status)
-
-        self.root = tk.Tk()
-        self.root.title("TremorAssist")
-        self.root.resizable(False, False)
-        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
-
-        self._status_var = tk.StringVar(value="Starting…")
-        self._stats_var = tk.StringVar(value="")
+        self._status_msg = "Starting…"
+        self._fix_visible = False
+        self._advanced_visible = False
+        self._radios = {}
+        self._sliders = {}
+        self._checks = {}
+        self._engine = TremorEngine(settings, on_status=self._set_status_msg)
         self._build()
+        self._engine.start()
+        return self
 
-        self.engine.start()
-        self._poll_stats()
+    @objc.python_method
+    def _set_status_msg(self, msg):
+        # Called from the tap thread; just stash it. The timer (main thread) reads it.
+        self._status_msg = msg
 
-    # ----------------------------------------------------------------- UI build
-    def _build(self) -> None:
-        pad = {"padx": 10, "pady": 4}
-        frm = ttk.Frame(self.root, padding=12)
-        frm.grid(sticky="nsew")
-
-        ttk.Label(frm, text="TremorAssist", font=("Helvetica", 16, "bold")).grid(
-            row=0, column=0, columnspan=3, sticky="w"
+    # ---- UI build -----------------------------------------------------------
+    @objc.python_method
+    def _build(self):
+        style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable
+        self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(0, 0, W, 640), style, NSBackingStoreBuffered, False
         )
-        ttk.Label(
-            frm,
-            text="System-wide mouse smoothing + key/click debounce for hand tremor.",
-            foreground="#555",
-        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        self.window.setTitle_("TremorAssist")
+        self.window.setReleasedWhenClosed_(False)
+        self.window.setDelegate_(self)
+        self.content = self.window.contentView()
 
-        # Master enable.
-        self._enabled = tk.BooleanVar(value=self.settings.enabled)
-        ttk.Checkbutton(
-            frm, text="Assist enabled (master switch)", variable=self._enabled,
-            command=self._on_enabled,
-        ).grid(row=2, column=0, columnspan=3, sticky="w", **pad)
+        # Header.
+        self.title_lbl = _label("TremorAssist", size=24, bold=True)
+        self.sub_lbl = _label("Steadier aim and cleaner key presses while you play.",
+                              size=13, color=MUTED)
 
-        # Presets.
-        ttk.Label(frm, text="Preset:").grid(row=3, column=0, sticky="w", **pad)
-        preset_frame = ttk.Frame(frm)
-        preset_frame.grid(row=3, column=1, columnspan=2, sticky="w")
-        for name in config.PRESETS:
-            ttk.Button(
-                preset_frame, text=name, width=8,
-                command=lambda n=name: self._apply_preset(n),
-            ).pack(side="left", padx=2)
+        # Big on/off button.
+        self.power_btn = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, INNER, 52))
+        self.power_btn.setBezelStyle_(NSBezelStyleRegularSquare)
+        self.power_btn.setFont_(NSFont.boldSystemFontOfSize_(16))
+        self.power_btn.setTarget_(self)
+        self.power_btn.setAction_("togglePower:")
 
-        ttk.Separator(frm, orient="horizontal").grid(
-            row=4, column=0, columnspan=3, sticky="ew", pady=8
+        self.status_lbl = _label("", size=12, color=MUTED)
+
+        self.fix_btn = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, INNER, 32))
+        self.fix_btn.setBezelStyle_(NSBezelStyleRegularSquare)
+        self.fix_btn.setTitle_("Fix this — open Accessibility settings")
+        self.fix_btn.setBezelColor_(RED)
+        self.fix_btn.setTarget_(self)
+        self.fix_btn.setAction_("openAccessibility:")
+
+        self.sep1 = self._sep()
+        self.comfort_hdr = _label("Comfort level", size=15, bold=True)
+        self.comfort_sub = _label("Pick how much help you want — change it anytime.",
+                                  size=12, color=MUTED)
+
+        selected = _which_preset(self.settings)
+        for name in ("Mild", "Moderate", "Strong", "Off"):
+            btn = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, INNER, 38))
+            btn.setButtonType_(NSRadioButton)
+            btn.setTitle_(f"  {name}  —  {PRESET_INFO[name]}")
+            btn.setFont_(NSFont.systemFontOfSize_(13))
+            btn.setTarget_(self)
+            btn.setAction_("radioChanged:")
+            btn.setState_(NSOnState if name == selected else NSOffState)
+            self._radios[name] = btn
+
+        # Advanced disclosure.
+        self.adv_toggle = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, INNER, 22))
+        self.adv_toggle.setBezelStyle_(NSBezelStyleRegularSquare)
+        self.adv_toggle.setBordered_(False)
+        self.adv_toggle.setFont_(NSFont.systemFontOfSize_(12))
+        self.adv_toggle.setTarget_(self)
+        self.adv_toggle.setAction_("toggleAdvanced:")
+        self.adv_toggle.setContentTintColor_(BLUE) if hasattr(self.adv_toggle, "setContentTintColor_") else None
+
+        # Advanced controls.
+        self._adv_views = []
+        self.chk_smooth = self._check("Smooth mouse movement", 1, self.settings.smoothing_enabled)
+        self.lbl_steady = _label("Steadiness   (very steady ◀ ▶ very responsive)", size=12, color=MUTED)
+        self.sld_steady = self._slider(1, 0.2, 4.0, self.settings.min_cutoff)
+        self.lbl_resp = _label("Fast-move snappiness", size=12, color=MUTED)
+        self.sld_resp = self._slider(2, 0.002, 0.08, self.settings.beta)
+        self.chk_key = self._check("Ignore accidental repeat key presses", 2, self.settings.debounce_enabled)
+        self.lbl_key = _label("Key cooldown   (off ◀ ▶ long)", size=12, color=MUTED)
+        self.sld_key = self._slider(3, 0.0, 200.0, self.settings.debounce_ms)
+        self.chk_click = self._check("Ignore accidental double-clicks", 3, self.settings.click_debounce_enabled)
+        self.lbl_click = _label("Click cooldown   (off ◀ ▶ long)", size=12, color=MUTED)
+        self.sld_click = self._slider(4, 0.0, 300.0, self.settings.click_debounce_ms)
+        self._adv_views = [
+            self.chk_smooth, self.lbl_steady, self.sld_steady, self.lbl_resp, self.sld_resp,
+            self.chk_key, self.lbl_key, self.sld_key, self.chk_click, self.lbl_click, self.sld_click,
+        ]
+
+        self.sep2 = self._sep()
+        self.stats_lbl = _label("", size=12, color=MUTED)
+
+        # Add everything to the content view.
+        for v in ([self.title_lbl, self.sub_lbl, self.power_btn, self.status_lbl,
+                   self.fix_btn, self.sep1, self.comfort_hdr, self.comfort_sub]
+                  + list(self._radios.values())
+                  + [self.adv_toggle] + self._adv_views + [self.sep2, self.stats_lbl]):
+            self.content.addSubview_(v)
+
+        self._refresh_power()
+        self._relayout()
+
+        # Status/stats refresh timer (main thread).
+        self.timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            0.3, self, "tick:", None, True
         )
 
-        # Smoothing controls.
-        self._smoothing = tk.BooleanVar(value=self.settings.smoothing_enabled)
-        ttk.Checkbutton(
-            frm, text="Mouse smoothing", variable=self._smoothing,
-            command=self._on_smoothing,
-        ).grid(row=5, column=0, columnspan=3, sticky="w", **pad)
+    @objc.python_method
+    def _sep(self):
+        box = NSBox.alloc().initWithFrame_(NSMakeRect(0, 0, INNER, 1))
+        box.setBoxType_(2)  # NSBoxSeparator
+        return box
 
-        self._min_cutoff = self._make_slider(
-            frm, 6, "Stability (less jitter ◀ ▶ more responsive)",
-            0.2, 4.0, self.settings.min_cutoff, self._on_min_cutoff,
-        )
-        self._beta = self._make_slider(
-            frm, 7, "Flick responsiveness", 0.002, 0.08,
-            self.settings.beta, self._on_beta,
-        )
+    @objc.python_method
+    def _check(self, title, tag, on):
+        b = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, INNER, 22))
+        b.setButtonType_(NSSwitchButton)
+        b.setTitle_(title)
+        b.setFont_(NSFont.systemFontOfSize_(13))
+        b.setTag_(tag)
+        b.setState_(NSOnState if on else NSOffState)
+        b.setTarget_(self)
+        b.setAction_("checkChanged:")
+        self._checks[tag] = b
+        return b
 
-        ttk.Separator(frm, orient="horizontal").grid(
-            row=8, column=0, columnspan=3, sticky="ew", pady=8
-        )
+    @objc.python_method
+    def _slider(self, tag, lo, hi, value):
+        s = NSSlider.alloc().initWithFrame_(NSMakeRect(0, 0, INNER, 20))
+        s.setMinValue_(lo)
+        s.setMaxValue_(hi)
+        s.setFloatValue_(value)
+        s.setTag_(tag)
+        s.setContinuous_(True)
+        s.setTarget_(self)
+        s.setAction_("sliderChanged:")
+        self._sliders[tag] = s
+        return s
 
-        # Debounce controls.
-        self._debounce = tk.BooleanVar(value=self.settings.debounce_enabled)
-        ttk.Checkbutton(
-            frm, text="Keyboard debounce", variable=self._debounce,
-            command=self._on_debounce,
-        ).grid(row=9, column=0, columnspan=3, sticky="w", **pad)
-        self._debounce_ms = self._make_slider(
-            frm, 10, "Key debounce window (ms)", 0.0, 200.0,
-            self.settings.debounce_ms, self._on_debounce_ms,
-        )
+    # ---- layout -------------------------------------------------------------
+    @objc.python_method
+    def _relayout(self):
+        items = []  # (view, top, height)
+        top = 20
 
-        self._click_debounce = tk.BooleanVar(value=self.settings.click_debounce_enabled)
-        ttk.Checkbutton(
-            frm, text="Click debounce", variable=self._click_debounce,
-            command=self._on_click_debounce,
-        ).grid(row=11, column=0, columnspan=3, sticky="w", **pad)
-        self._click_debounce_ms = self._make_slider(
-            frm, 12, "Click debounce window (ms)", 0.0, 300.0,
-            self.settings.click_debounce_ms, self._on_click_debounce_ms,
-        )
+        def add(view, h, gap_after=8, x=M, w=INNER):
+            nonlocal top
+            items.append((view, top, h, x, w))
+            top += h + gap_after
 
-        ttk.Separator(frm, orient="horizontal").grid(
-            row=13, column=0, columnspan=3, sticky="ew", pady=8
-        )
-
-        ttk.Label(frm, textvariable=self._status_var, foreground="#0a7").grid(
-            row=14, column=0, columnspan=3, sticky="w", **pad
-        )
-        ttk.Label(frm, textvariable=self._stats_var, foreground="#555").grid(
-            row=15, column=0, columnspan=3, sticky="w", **pad
-        )
-        self._access_btn = ttk.Button(
-            frm, text="Open Accessibility Settings", command=_open_accessibility_pane
-        )  # shown only if permission is missing
-
-    def _make_slider(self, parent, row, label, lo, hi, value, command):
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=10)
-        var = tk.DoubleVar(value=value)
-        scale = ttk.Scale(
-            parent, from_=lo, to=hi, orient="horizontal", length=240, variable=var,
-            command=lambda _v, c=command, vv=var: c(vv.get()),
-        )
-        scale.grid(row=row, column=1, sticky="w", padx=6, pady=2)
-        val_lbl = ttk.Label(parent, width=6)
-        val_lbl.grid(row=row, column=2, sticky="w")
-
-        def refresh(*_):
-            val_lbl.config(text=f"{var.get():.3g}")
-        var.trace_add("write", refresh)
-        refresh()
-        return var
-
-    # --------------------------------------------------------------- callbacks
-    def _on_enabled(self):
-        self.settings.enabled = self._enabled.get()
-        self._save()
-
-    def _on_smoothing(self):
-        self.settings.smoothing_enabled = self._smoothing.get()
-        self._save()
-
-    def _on_debounce(self):
-        self.settings.debounce_enabled = self._debounce.get()
-        self._save()
-
-    def _on_click_debounce(self):
-        self.settings.click_debounce_enabled = self._click_debounce.get()
-        self._save()
-
-    def _on_min_cutoff(self, v):
-        self.settings.min_cutoff = float(v)
-        self._save_debounced()
-
-    def _on_beta(self, v):
-        self.settings.beta = float(v)
-        self._save_debounced()
-
-    def _on_debounce_ms(self, v):
-        self.settings.debounce_ms = float(v)
-        self._save_debounced()
-
-    def _on_click_debounce_ms(self, v):
-        self.settings.click_debounce_ms = float(v)
-        self._save_debounced()
-
-    def _apply_preset(self, name: str):
-        config.apply_preset(self.settings, name)
-        # Reflect into widgets.
-        self._smoothing.set(self.settings.smoothing_enabled)
-        self._debounce.set(self.settings.debounce_enabled)
-        self._click_debounce.set(self.settings.click_debounce_enabled)
-        self._min_cutoff.set(self.settings.min_cutoff)
-        self._beta.set(self.settings.beta)
-        self._debounce_ms.set(self.settings.debounce_ms)
-        self._click_debounce_ms.set(self.settings.click_debounce_ms)
-        self._save()
-
-    # ------------------------------------------------------------------ plumbing
-    def _on_engine_status(self, msg: str):
-        # Called from the tap thread — marshal onto the Tk main loop.
-        self.root.after(0, lambda: self._set_status(msg))
-
-    def _set_status(self, msg: str):
-        if msg.startswith("ACCESSIBILITY_REQUIRED"):
-            self._status_var.set(
-                "⚠ Accessibility permission needed. Click the button below, enable "
-                "your terminal, then relaunch."
-            )
-            self._access_btn.grid(row=16, column=0, columnspan=3, pady=6)
-        elif msg == "RUNNING":
-            self._status_var.set("● Active — filtering input")
-        elif msg == "STOPPED":
-            self._status_var.set("○ Stopped")
+        add(self.title_lbl, 30, gap_after=2)
+        add(self.sub_lbl, 18, gap_after=16)
+        add(self.power_btn, 52, gap_after=8)
+        add(self.status_lbl, 34, gap_after=6)
+        if self._fix_visible:
+            self.fix_btn.setHidden_(False)
+            add(self.fix_btn, 32, gap_after=8)
         else:
-            self._status_var.set(msg)
-
-    def _poll_stats(self):
-        e = self.engine
-        self._stats_var.set(
-            f"smoothed: {e.events_smoothed:,}   keys debounced: {e.keys_suppressed}"
-            f"   clicks debounced: {e.clicks_suppressed}"
+            self.fix_btn.setHidden_(True)
+        add(self.sep1, 1, gap_after=12)
+        add(self.comfort_hdr, 22, gap_after=2)
+        add(self.comfort_sub, 16, gap_after=8)
+        for name in ("Mild", "Moderate", "Strong", "Off"):
+            add(self._radios[name], 26, gap_after=4)
+        top += 6
+        self.adv_toggle.setTitle_(
+            ("▾  Hide fine-tuning" if self._advanced_visible else "▸  Fine-tune (optional)")
         )
-        self.root.after(250, self._poll_stats)
+        add(self.adv_toggle, 20, gap_after=8)
 
-    _save_job = None
+        for v in self._adv_views:
+            v.setHidden_(not self._advanced_visible)
+        if self._advanced_visible:
+            add(self.chk_smooth, 22, gap_after=4)
+            add(self.lbl_steady, 16, gap_after=0)
+            add(self.sld_steady, 20, gap_after=10)
+            add(self.lbl_resp, 16, gap_after=0)
+            add(self.sld_resp, 20, gap_after=12)
+            add(self.chk_key, 22, gap_after=4)
+            add(self.lbl_key, 16, gap_after=0)
+            add(self.sld_key, 20, gap_after=12)
+            add(self.chk_click, 22, gap_after=4)
+            add(self.lbl_click, 16, gap_after=0)
+            add(self.sld_click, 20, gap_after=12)
 
-    def _save_debounced(self):
-        if self._save_job is not None:
-            self.root.after_cancel(self._save_job)
-        self._save_job = self.root.after(400, self._save)
+        add(self.sep2, 1, gap_after=8)
+        add(self.stats_lbl, 30, gap_after=0)
 
+        total_h = top + M
+        self.window.setContentSize_((W, total_h))
+        for view, t, h, x, w in items:
+            view.setFrame_(NSMakeRect(x, total_h - t - h, w, h))
+
+    # ---- actions ------------------------------------------------------------
+    def togglePower_(self, sender):
+        self.settings.enabled = not self.settings.enabled
+        self._refresh_power()
+        self._save()
+
+    @objc.python_method
+    def _refresh_power(self):
+        on = self.settings.enabled
+        self.power_btn.setTitle_(
+            "✓  Protection is ON   (click to turn off)" if on
+            else "Protection is OFF   (click to turn on)"
+        )
+        self.power_btn.setBezelColor_(GREEN if on else GREY)
+
+    def radioChanged_(self, sender):
+        for name, btn in self._radios.items():
+            if btn is sender:
+                config.apply_preset(self.settings, name)
+                self._sync_advanced()
+                self._save()
+                break
+
+    def openAccessibility_(self, sender):
+        NSWorkspace.sharedWorkspace().openURL_(NSURL.URLWithString_(ACCESS_URL))
+
+    def toggleAdvanced_(self, sender):
+        self._advanced_visible = not self._advanced_visible
+        self._relayout()
+
+    def checkChanged_(self, sender):
+        on = sender.state() == NSOnState
+        tag = sender.tag()
+        if tag == 1:
+            self.settings.smoothing_enabled = on
+        elif tag == 2:
+            self.settings.debounce_enabled = on
+        elif tag == 3:
+            self.settings.click_debounce_enabled = on
+        self._mark_custom()
+        self._save()
+
+    def sliderChanged_(self, sender):
+        tag = sender.tag()
+        v = float(sender.floatValue())
+        if tag == 1:
+            self.settings.min_cutoff = v
+        elif tag == 2:
+            self.settings.beta = v
+        elif tag == 3:
+            self.settings.debounce_ms = v
+        elif tag == 4:
+            self.settings.click_debounce_ms = v
+        self._mark_custom()
+        self._save_soon()
+
+    @objc.python_method
+    def _sync_advanced(self):
+        self.chk_smooth.setState_(NSOnState if self.settings.smoothing_enabled else NSOffState)
+        self.chk_key.setState_(NSOnState if self.settings.debounce_enabled else NSOffState)
+        self.chk_click.setState_(NSOnState if self.settings.click_debounce_enabled else NSOffState)
+        self.sld_steady.setFloatValue_(self.settings.min_cutoff)
+        self.sld_resp.setFloatValue_(self.settings.beta)
+        self.sld_key.setFloatValue_(self.settings.debounce_ms)
+        self.sld_click.setFloatValue_(self.settings.click_debounce_ms)
+
+    @objc.python_method
+    def _mark_custom(self):
+        # Highlight whichever preset (if any) the current settings now match.
+        match = _which_preset(self.settings)
+        for name, btn in self._radios.items():
+            btn.setState_(NSOnState if name == match else NSOffState)
+
+    # ---- timer / status -----------------------------------------------------
+    def tick_(self, timer):
+        msg = self._status_msg
+        if msg.startswith("ACCESSIBILITY_REQUIRED"):
+            self.status_lbl.setStringValue_(
+                "⚠  One quick setup step — allow macOS permission below, then reopen."
+            )
+            self.status_lbl.setTextColor_(RED)
+            if not self._fix_visible:
+                self._fix_visible = True
+                self._relayout()
+        elif msg == "RUNNING":
+            self.status_lbl.setStringValue_("●  Active and protecting your input.")
+            self.status_lbl.setTextColor_(GREEN)
+            if self._fix_visible:
+                self._fix_visible = False
+                self._relayout()
+        elif msg == "STOPPED":
+            self.status_lbl.setStringValue_("○  Stopped.")
+            self.status_lbl.setTextColor_(MUTED)
+        else:
+            self.status_lbl.setStringValue_(msg)
+            self.status_lbl.setTextColor_(MUTED)
+
+        e = self._engine
+        self.stats_lbl.setStringValue_(
+            f"Steadied {e.events_smoothed:,} movements · ignored "
+            f"{e.keys_suppressed} shaky presses · {e.clicks_suppressed} stray clicks"
+        )
+
+    # ---- persistence / lifecycle -------------------------------------------
+    _save_pending = False
+
+    @objc.python_method
     def _save(self):
         config.save(self.settings)
 
-    def _on_close(self):
-        self.engine.stop()
-        self._save()
-        self.root.destroy()
+    @objc.python_method
+    def _save_soon(self):
+        # Coalesce rapid slider drags into one save.
+        if not self._save_pending:
+            self._save_pending = True
+            NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+                0.4, self, "doSave:", None, False
+            )
 
-    def run(self):
-        self.root.mainloop()
+    def doSave_(self, timer):
+        self._save_pending = False
+        self._save()
+
+    def windowWillClose_(self, notification):
+        self._engine.stop()
+        self._save()
+        NSApplication.sharedApplication().terminate_(self)
+
+    @objc.python_method
+    def show(self):
+        self.window.center()
+        self.window.makeKeyAndOrderFront_(None)
 
 
 def main():
+    first_run = not os.path.exists(config.CONFIG_PATH)
     settings = config.load()
-    ControlPanel(settings).run()
+
+    app = NSApplication.sharedApplication()
+    app.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+    controller = Controller.alloc().initWithSettings_(settings)
+    controller.show()
+    if first_run:
+        _show_welcome(controller)
+    app.activateIgnoringOtherApps_(True)
+    app.run()
+
+
+def _show_welcome(controller):
+    from AppKit import NSAlert
+
+    alert = NSAlert.alloc().init()
+    alert.setMessageText_("Welcome to TremorAssist 👋")
+    alert.setInformativeText_(
+        "Here's all you need to do:\n\n"
+        "1.  Pick a comfort level — start with Moderate.\n"
+        "2.  If macOS asks, allow permission so we can steady your input.\n"
+        "3.  Play your game. Leave this window open in the background.\n\n"
+        "Aim feeling laggy? Choose Mild.   Still shaky? Choose Strong."
+    )
+    alert.addButtonWithTitle_("Let's go")
+    alert.runModal()
