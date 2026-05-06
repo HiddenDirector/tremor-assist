@@ -6,7 +6,7 @@ import argparse
 import sys
 import time
 
-from . import config
+from . import config, metrics
 from .engine import TremorEngine
 
 
@@ -34,7 +34,9 @@ def _run_headless(preset: str | None) -> int:
         while True:
             time.sleep(1.0)
             print(
-                f"\rsmoothed={engine.events_smoothed:,} "
+                f"\rmovements={engine.events_smoothed:,} "
+                f"jitter_removed={engine.jitter_removed_pct():.0f}% "
+                f"tremor_now={engine.avg_tremor_px():.1f}px "
                 f"keys_debounced={engine.keys_suppressed} "
                 f"clicks_debounced={engine.clicks_suppressed}   ",
                 end="",
@@ -43,6 +45,14 @@ def _run_headless(preset: str | None) -> int:
     except KeyboardInterrupt:
         print("\nStopping…")
         engine.stop()
+        rec = metrics.record_session(engine.snapshot())
+        if rec:
+            print(f"Session saved: {rec['movements']:,} movements, "
+                  f"{rec['jitter_removed_pct']:.0f}% jitter removed.")
+        totals = metrics.all_time_totals()
+        print(f"All time: {totals['movements']:,} movements over "
+              f"{totals['sessions']} sessions, "
+              f"{metrics.humanize_distance_px(totals['jitter_removed_px'])} of shake removed.")
         return 0
 
 

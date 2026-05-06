@@ -69,6 +69,21 @@ class TremorEngine:
         self.keys_suppressed = 0
         self.clicks_suppressed = 0
 
+        # --- Tracking metrics ---
+        # Total distance the cursor *would* have travelled (raw) vs. the
+        # distance it actually travelled after smoothing. The difference is the
+        # jitter we erased.
+        self.raw_path_px = 0.0
+        self.filtered_path_px = 0.0
+        self._last_raw: Optional[tuple[float, float]] = None
+        # Per-move tremor amplitude = how far the raw point sat from the
+        # smoothed point. Kept in a fixed ring buffer for a live graph.
+        self._tremor_capacity = 180
+        self._tremor_buf = [0.0] * self._tremor_capacity
+        self._tremor_idx = 0
+        self.peak_tremor_px = 0.0
+        self.started_at = time.time()
+
         self._tap = None
         self._run_loop = None
         self._run_loop_source = None
@@ -164,6 +179,7 @@ class TremorEngine:
         s = self.settings
         if not s.smoothing_enabled:
             self._last_filtered = None
+            self._last_raw = None
             return event
 
         self._filter.update_params(s.min_cutoff, s.beta, s.d_cutoff)
@@ -180,9 +196,55 @@ class TremorEngine:
             Quartz.CGEventSetIntegerValueField(
                 event, Quartz.kCGMouseEventDeltaY, int(round(fy - self._last_filtered[1]))
             )
+
+        # --- tracking ---
+        if self._last_raw is not None:
+            self.raw_path_px += math.hypot(loc.x - self._last_raw[0], loc.y - self._last_raw[1])
+        if self._last_filtered is not None:
+            self.filtered_path_px += math.hypot(fx - self._last_filtered[0], fy - self._last_filtered[1])
+        amp = math.hypot(loc.x - fx, loc.y - fy)
+        self._tremor_buf[self._tremor_idx] = amp
+        self._tremor_idx = (self._tremor_idx + 1) % self._tremor_capacity
+        if amp > self.peak_tremor_px:
+            self.peak_tremor_px = amp
+
+        self._last_raw = (loc.x, loc.y)
         self._last_filtered = (fx, fy)
         self.events_smoothed += 1
         return event
+
+    # ------------------------------------------------------------------- tracking
+    def tremor_recent(self):
+        """Snapshot of the recent per-move tremor amplitudes, oldest-first."""
+        i = self._tremor_idx
+        buf = self._tremor_buf
+        return buf[i:] + buf[:i]
+
+    def jitter_removed_px(self) -> float:
+        return max(0.0, self.raw_path_px - self.filtered_path_px)
+
+    def jitter_removed_pct(self) -> float:
+        if self.raw_path_px < 1.0:
+            return 0.0
+        return 100.0 * self.jitter_removed_px() / self.raw_path_px
+
+    def avg_tremor_px(self) -> float:
+        recent = [v for v in self._tremor_buf if v > 0.0]
+        return sum(recent) / len(recent) if recent else 0.0
+
+    def snapshot(self) -> dict:
+        """Primitive-only snapshot for persisting a session record."""
+        return {
+            "duration_s": round(time.time() - self.started_at, 1),
+            "movements": self.events_smoothed,
+            "raw_path_px": round(self.raw_path_px, 1),
+            "filtered_path_px": round(self.filtered_path_px, 1),
+            "jitter_removed_px": round(self.jitter_removed_px(), 1),
+            "jitter_removed_pct": round(self.jitter_removed_pct(), 1),
+            "peak_tremor_px": round(self.peak_tremor_px, 1),
+            "keys_suppressed": self.keys_suppressed,
+            "clicks_suppressed": self.clicks_suppressed,
+        }
 
     def _handle_mouse_down(self, event_type, event):
         s = self.settings

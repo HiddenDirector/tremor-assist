@@ -26,6 +26,7 @@ from AppKit import (
     NSApplicationActivationPolicyRegular,
     NSBackingStoreBuffered,
     NSBezelStyleRegularSquare,
+    NSBezierPath,
     NSBox,
     NSButton,
     NSColor,
@@ -47,7 +48,7 @@ from AppKit import (
 )
 from Foundation import NSURL, NSObject
 
-from . import config
+from . import config, metrics
 from .config import Settings
 
 W = 470          # window width
@@ -94,6 +95,68 @@ def _which_preset(settings: Settings):
         if all(getattr(settings, k) == v for k, v in overrides.items()):
             return name
     return None
+
+
+class TremorGraphView(NSView):
+    """A live sparkline of recent tremor amplitude (how much shake we caught).
+
+    Reads the engine's ring buffer each redraw. Taller spikes = more tremor the
+    filter absorbed at that moment. A flat line means a steady hand (or that
+    smoothing is off / idle).
+    """
+
+    def initWithFrame_(self, frame):
+        self = objc.super(TremorGraphView, self).initWithFrame_(frame)
+        if self is not None:
+            self.engine = None
+        return self
+
+    def drawRect_(self, rect):
+        b = self.bounds()
+        w, h = b.size.width, b.size.height
+        NSColor.colorWithCalibratedWhite_alpha_(0.96, 1.0).set()
+        NSBezierPath.fillRect_(b)
+        # baseline
+        NSColor.colorWithCalibratedWhite_alpha_(0.85, 1.0).set()
+        base = NSBezierPath.bezierPath()
+        base.moveToPoint_((0, 2))
+        base.lineToPoint_((w, 2))
+        base.setLineWidth_(1.0)
+        base.stroke()
+
+        eng = getattr(self, "engine", None)
+        if eng is None:
+            return
+        samples = eng.tremor_recent()
+        n = len(samples)
+        if n < 2:
+            return
+        scale_max = max(6.0, max(samples))  # px; floor so tiny tremor stays readable
+        pad = 3.0
+
+        def pt(i, v):
+            x = w * (i / (n - 1))
+            y = pad + min(v / scale_max, 1.0) * (h - 2 * pad)
+            return (x, y)
+
+        # Filled area under the curve.
+        area = NSBezierPath.bezierPath()
+        area.moveToPoint_((0, 2))
+        for i, v in enumerate(samples):
+            area.lineToPoint_(pt(i, v))
+        area.lineToPoint_((w, 2))
+        area.closePath()
+        NSColor.colorWithCalibratedRed_green_blue_alpha_(47/255, 123/255, 232/255, 0.18).set()
+        area.fill()
+
+        # The line itself.
+        line = NSBezierPath.bezierPath()
+        line.moveToPoint_(pt(0, samples[0]))
+        for i, v in enumerate(samples[1:], start=1):
+            line.lineToPoint_(pt(i, v))
+        NSColor.colorWithCalibratedRed_green_blue_alpha_(47/255, 123/255, 232/255, 1.0).set()
+        line.setLineWidth_(1.5)
+        line.stroke()
 
 
 class Controller(NSObject):
@@ -197,14 +260,26 @@ class Controller(NSObject):
             self.chk_key, self.lbl_key, self.sld_key, self.chk_click, self.lbl_click, self.sld_click,
         ]
 
+        # --- Tracking section ---
         self.sep2 = self._sep()
-        self.stats_lbl = _label("", size=12, color=MUTED)
+        self.track_hdr = _label("Tracking", size=15, bold=True)
+        self.track_sub = _label("Live tremor (taller spikes = more shake caught):",
+                                size=12, color=MUTED)
+        self.graph = TremorGraphView.alloc().initWithFrame_(NSMakeRect(0, 0, INNER, 50))
+        self.graph.engine = self._engine
+        self.now_lbl = _label("", size=12, color=TEXT)
+        self.session_lbl = _label("", size=12, color=MUTED)
+        self.alltime_lbl = _label("", size=12, color=MUTED)
+        self._track_views = [
+            self.sep2, self.track_hdr, self.track_sub, self.graph,
+            self.now_lbl, self.session_lbl, self.alltime_lbl,
+        ]
 
         # Add everything to the content view.
         for v in ([self.title_lbl, self.sub_lbl, self.power_btn, self.status_lbl,
                    self.fix_btn, self.sep1, self.comfort_hdr, self.comfort_sub]
                   + list(self._radios.values())
-                  + [self.adv_toggle] + self._adv_views + [self.sep2, self.stats_lbl]):
+                  + [self.adv_toggle] + self._adv_views + self._track_views):
             self.content.addSubview_(v)
 
         self._refresh_power()
@@ -293,8 +368,13 @@ class Controller(NSObject):
             add(self.lbl_click, 16, gap_after=0)
             add(self.sld_click, 20, gap_after=12)
 
-        add(self.sep2, 1, gap_after=8)
-        add(self.stats_lbl, 30, gap_after=0)
+        add(self.sep2, 1, gap_after=10)
+        add(self.track_hdr, 22, gap_after=2)
+        add(self.track_sub, 16, gap_after=4)
+        add(self.graph, 50, gap_after=8)
+        add(self.now_lbl, 16, gap_after=4)
+        add(self.session_lbl, 16, gap_after=2)
+        add(self.alltime_lbl, 16, gap_after=0)
 
         total_h = top + M
         self.window.setContentSize_((W, total_h))
@@ -398,10 +478,34 @@ class Controller(NSObject):
             self.status_lbl.setStringValue_(msg)
             self.status_lbl.setTextColor_(MUTED)
 
+        self._update_tracking()
+
+    @objc.python_method
+    def _update_tracking(self):
         e = self._engine
-        self.stats_lbl.setStringValue_(
-            f"Steadied {e.events_smoothed:,} movements · ignored "
+        # Live tremor readout + redraw the sparkline.
+        self.now_lbl.setStringValue_(
+            f"Tremor now: {e.avg_tremor_px():.1f} px avg · peak {e.peak_tremor_px:.0f} px"
+        )
+        self.graph.setNeedsDisplay_(True)
+
+        # This-session summary.
+        self.session_lbl.setStringValue_(
+            f"This session: steadied {e.events_smoothed:,} movements · "
+            f"{e.jitter_removed_pct():.0f}% jitter removed · "
             f"{e.keys_suppressed} shaky presses · {e.clicks_suppressed} stray clicks"
+        )
+
+        # All-time totals (previous sessions + what this session has added).
+        prior = metrics.all_time_totals()
+        movements = prior["movements"] + e.events_smoothed
+        jitter = prior["jitter_removed_px"] + e.jitter_removed_px()
+        keys = prior["keys_suppressed"] + e.keys_suppressed
+        sessions = prior["sessions"] + 1
+        self.alltime_lbl.setStringValue_(
+            f"All time: {movements:,} movements over {sessions} sessions · "
+            f"{metrics.humanize_distance_px(jitter)} of shake removed · "
+            f"{keys} shaky presses caught"
         )
 
     # ---- persistence / lifecycle -------------------------------------------
@@ -427,6 +531,11 @@ class Controller(NSObject):
     def windowWillClose_(self, notification):
         self._engine.stop()
         self._save()
+        # Persist this session to the rolling history for all-time tracking.
+        try:
+            metrics.record_session(self._engine.snapshot())
+        except Exception:
+            pass
         NSApplication.sharedApplication().terminate_(self)
 
     @objc.python_method
