@@ -29,6 +29,9 @@ from Foundation import NSObject
 from . import __version__, config, metrics
 from .ui import Controller
 
+# Strong references to long-lived objects (see main()).
+_KEEP_ALIVE: list = []
+
 
 class AppDelegate(NSObject):
     def initWithController_(self, controller):
@@ -202,8 +205,10 @@ def main():
     controller = Controller.alloc().initWithSettings_(settings)
     delegate = AppDelegate.alloc().initWithController_(controller)
     app.setDelegate_(delegate)
-    # Keep a strong ref so the delegate isn't collected.
-    app._tremor_delegate = delegate
+    # NSApplication's delegate is held weakly and NSApplication won't accept
+    # arbitrary Python attributes, so keep strong refs in a module global to
+    # stop the controller/delegate from being garbage-collected.
+    _KEEP_ALIVE.extend([controller, delegate])
 
     controller.show()
     if first_run:
