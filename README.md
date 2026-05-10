@@ -22,6 +22,17 @@ Everything is tunable live, with presets from **Mild** to **Strong**.
 
 ---
 
+## Features
+
+- **One-click app** with its own icon — lives in the Dock *and* the menu bar.
+- **Comfort levels** (Mild → Strong) in plain language; technical sliders are
+  optional and hidden by default.
+- **Menu-bar control** — toggle protection or switch comfort level without
+  opening the window; closing the window keeps it running while you game.
+- **Live tracking** — a real-time tremor graph, "% jitter removed", and
+  per-session + all-time history.
+- **One Euro Filter** smoothing plus keyboard/click debounce, system-wide.
+
 ## Requirements
 
 - macOS
@@ -58,6 +69,20 @@ The app shows a button that opens this pane directly if permission is missing.
 ```
 
 Runs the filter with a chosen preset and prints live stats. Ctrl+C to stop.
+
+## Building a standalone app
+
+To produce a self-contained `TremorAssist.app` that bundles its own Python and
+runs on a clean Mac (drop it in `/Applications`, no Terminal needed):
+
+```bash
+.venv/bin/python tools/make_icon.py     # (re)generate the icon, optional
+.venv/bin/python setup.py py2app        # standalone build -> dist/TremorAssist.app
+```
+
+The result is in `dist/`. The lightweight `TremorAssist.app` checked into the
+repo root is the developer launcher (it reuses the project's virtualenv); the
+`dist/` build is the shippable one.
 
 ## How to tune it
 

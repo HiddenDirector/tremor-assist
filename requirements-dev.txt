@@ -1,0 +1,2 @@
+# Tools for building the distributable app (not needed to run from source).
+py2app>=0.28

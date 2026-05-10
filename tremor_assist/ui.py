@@ -399,10 +399,22 @@ class Controller(NSObject):
     def radioChanged_(self, sender):
         for name, btn in self._radios.items():
             if btn is sender:
-                config.apply_preset(self.settings, name)
-                self._sync_advanced()
-                self._save()
+                self.applyPresetNamed_(name)
                 break
+
+    def applyPresetNamed_(self, name):
+        """Apply a named comfort preset and reflect it across the UI.
+
+        Public entry point shared by the radio buttons and the menu-bar item.
+        """
+        config.apply_preset(self.settings, name)
+        self._sync_advanced()
+        self._mark_custom()
+        self._save()
+
+    @objc.python_method
+    def _current_preset(self):
+        return _which_preset(self.settings)
 
     def openAccessibility_(self, sender):
         NSWorkspace.sharedWorkspace().openURL_(NSURL.URLWithString_(ACCESS_URL))
@@ -528,15 +540,12 @@ class Controller(NSObject):
         self._save_pending = False
         self._save()
 
-    def windowWillClose_(self, notification):
-        self._engine.stop()
+    def windowShouldClose_(self, sender):
+        # Closing the window hides to the menu bar; the app keeps protecting
+        # input. Real quit (⌘Q / menu) is handled by the app delegate.
+        self.window.orderOut_(None)
         self._save()
-        # Persist this session to the rolling history for all-time tracking.
-        try:
-            metrics.record_session(self._engine.snapshot())
-        except Exception:
-            pass
-        NSApplication.sharedApplication().terminate_(self)
+        return False
 
     @objc.python_method
     def show(self):

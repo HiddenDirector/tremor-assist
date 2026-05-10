@@ -65,12 +65,12 @@ def main() -> int:
     if args.headless:
         return _run_headless(args.preset)
 
-    from .ui import main as ui_main  # imported lazily so headless needs no Tk
     if args.preset:
         settings = config.load()
         config.apply_preset(settings, args.preset)
         config.save(settings)
-    ui_main()
+    from .app import main as app_main  # lazy import so headless needs no AppKit
+    app_main()
     return 0
 
 
