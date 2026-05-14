@@ -56,6 +56,7 @@ M = 24           # outer margin
 INNER = W - 2 * M
 
 ACCESS_URL = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+INPUT_MON_URL = "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
 
 PRESET_INFO = {
     "Mild": "Light touch — smooths small shakes, stays very responsive.",
@@ -212,10 +213,17 @@ class Controller(NSObject):
 
         self.fix_btn = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, INNER, 32))
         self.fix_btn.setBezelStyle_(NSBezelStyleRegularSquare)
-        self.fix_btn.setTitle_("Fix this — open Accessibility settings")
+        self.fix_btn.setTitle_("1 ▸ Allow Accessibility  (mouse smoothing)")
         self.fix_btn.setBezelColor_(RED)
         self.fix_btn.setTarget_(self)
         self.fix_btn.setAction_("openAccessibility:")
+
+        self.fix_btn2 = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, INNER, 32))
+        self.fix_btn2.setBezelStyle_(NSBezelStyleRegularSquare)
+        self.fix_btn2.setTitle_("2 ▸ Allow Input Monitoring  (key/click debounce)")
+        self.fix_btn2.setBezelColor_(RED)
+        self.fix_btn2.setTarget_(self)
+        self.fix_btn2.setAction_("openInputMonitoring:")
 
         self.sep1 = self._sep()
         self.comfort_hdr = _label("Comfort level", size=15, bold=True)
@@ -277,7 +285,7 @@ class Controller(NSObject):
 
         # Add everything to the content view.
         for v in ([self.title_lbl, self.sub_lbl, self.power_btn, self.status_lbl,
-                   self.fix_btn, self.sep1, self.comfort_hdr, self.comfort_sub]
+                   self.fix_btn, self.fix_btn2, self.sep1, self.comfort_hdr, self.comfort_sub]
                   + list(self._radios.values())
                   + [self.adv_toggle] + self._adv_views + self._track_views):
             self.content.addSubview_(v)
@@ -339,9 +347,12 @@ class Controller(NSObject):
         add(self.status_lbl, 34, gap_after=6)
         if self._fix_visible:
             self.fix_btn.setHidden_(False)
-            add(self.fix_btn, 32, gap_after=8)
+            self.fix_btn2.setHidden_(False)
+            add(self.fix_btn, 32, gap_after=6)
+            add(self.fix_btn2, 32, gap_after=8)
         else:
             self.fix_btn.setHidden_(True)
+            self.fix_btn2.setHidden_(True)
         add(self.sep1, 1, gap_after=12)
         add(self.comfort_hdr, 22, gap_after=2)
         add(self.comfort_sub, 16, gap_after=8)
@@ -419,6 +430,9 @@ class Controller(NSObject):
     def openAccessibility_(self, sender):
         NSWorkspace.sharedWorkspace().openURL_(NSURL.URLWithString_(ACCESS_URL))
 
+    def openInputMonitoring_(self, sender):
+        NSWorkspace.sharedWorkspace().openURL_(NSURL.URLWithString_(INPUT_MON_URL))
+
     def toggleAdvanced_(self, sender):
         self._advanced_visible = not self._advanced_visible
         self._relayout()
@@ -471,7 +485,8 @@ class Controller(NSObject):
         msg = self._status_msg
         if msg.startswith("ACCESSIBILITY_REQUIRED"):
             self.status_lbl.setStringValue_(
-                "⚠  One quick setup step — allow macOS permission below, then reopen."
+                "⚠  One quick setup step — turn on TremorAssist in the panels "
+                "below, then reopen the app."
             )
             self.status_lbl.setTextColor_(RED)
             if not self._fix_visible:
@@ -482,6 +497,24 @@ class Controller(NSObject):
             self.status_lbl.setTextColor_(GREEN)
             if self._fix_visible:
                 self._fix_visible = False
+                self._relayout()
+        elif msg == "RUNNING_MOUSE_ONLY":
+            self.status_lbl.setStringValue_(
+                "●  Mouse smoothing active. For key/click debounce, also allow "
+                "Input Monitoring below."
+            )
+            self.status_lbl.setTextColor_(GREEN)
+            if not self._fix_visible:
+                self._fix_visible = True
+                self._relayout()
+        elif msg == "RUNNING_KEYBOARD_ONLY":
+            self.status_lbl.setStringValue_(
+                "●  Key/click debounce active. For mouse smoothing, also allow "
+                "Accessibility below."
+            )
+            self.status_lbl.setTextColor_(GREEN)
+            if not self._fix_visible:
+                self._fix_visible = True
                 self._relayout()
         elif msg == "STOPPED":
             self.status_lbl.setStringValue_("○  Stopped.")

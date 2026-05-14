@@ -36,9 +36,14 @@ Everything is tunable live, with presets from **Mild** to **Strong**.
 ## Requirements
 
 - macOS
-- Python 3.9+
-- **Accessibility permission** for the app that launches it (Terminal, iTerm,
-  etc.). This is required for any tool that reads/alters input system-wide.
+- Python 3.9+ (only to build/run from source)
+- **Two macOS permissions** for the app (System Settings ▸ Privacy & Security):
+  - **Accessibility** → required for **mouse smoothing**.
+  - **Input Monitoring** → required for **keyboard/click debounce**.
+
+  The two are independent: with only Accessibility you still get mouse
+  smoothing; the app tells you which is active and gives a button for each.
+  After toggling a permission on, **reopen the app**.
 
 ## Quick start
 

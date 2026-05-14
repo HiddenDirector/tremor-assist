@@ -85,6 +85,12 @@ class TremorEngine:
         self.started_at = time.time()
 
         self._tap = None
+        self._mouse_tap = None
+        self._key_tap = None
+        self._mouse_source = None
+        self._key_source = None
+        self.mouse_active = False
+        self.keyboard_active = False
         self._run_loop = None
         self._run_loop_source = None
         self._thread: Optional[threading.Thread] = None
@@ -107,15 +113,8 @@ class TremorEngine:
             Quartz.CFRunLoopStop(self._run_loop)
 
     # ------------------------------------------------------------------- internals
-    def _run(self) -> None:
-        mask = _event_mask(
-            *_MOUSE_MOVE_TYPES,
-            *_MOUSE_DOWN_TYPES,
-            _KEY_DOWN_TYPE,
-        )
-        # Session-level tap, inserted at the head of the chain, that may alter
-        # or drop events (Default option, not ListenOnly).
-        self._tap = Quartz.CGEventTapCreate(
+    def _make_tap(self, mask):
+        tap = Quartz.CGEventTapCreate(
             Quartz.kCGSessionEventTap,
             Quartz.kCGHeadInsertEventTap,
             Quartz.kCGEventTapOptionDefault,
@@ -123,27 +122,54 @@ class TremorEngine:
             self._callback,
             None,
         )
-        if not self._tap:
+        if not tap:
+            return None, None
+        source = Quartz.CFMachPortCreateRunLoopSource(None, tap, 0)
+        Quartz.CFRunLoopAddSource(
+            Quartz.CFRunLoopGetCurrent(), source, Quartz.kCFRunLoopCommonModes
+        )
+        Quartz.CGEventTapEnable(tap, True)
+        return tap, source
+
+    def _run(self) -> None:
+        self._run_loop = Quartz.CFRunLoopGetCurrent()
+
+        # Two independent taps with different permission requirements:
+        #   * Pointer events  -> Accessibility permission
+        #   * Keyboard events -> Input Monitoring permission
+        # Splitting them means mouse smoothing still works if only one is
+        # granted, instead of an all-or-nothing failure.
+        mouse_mask = _event_mask(*_MOUSE_MOVE_TYPES, *_MOUSE_DOWN_TYPES)
+        self._mouse_tap, self._mouse_source = self._make_tap(mouse_mask)
+        self._key_tap, self._key_source = self._make_tap(_event_mask(_KEY_DOWN_TYPE))
+
+        self.mouse_active = self._mouse_tap is not None
+        self.keyboard_active = self._key_tap is not None
+        # Keep the legacy attribute pointing at whatever we have, for teardown.
+        self._tap = self._mouse_tap or self._key_tap
+
+        if not self.mouse_active and not self.keyboard_active:
             self._on_status(
                 "ACCESSIBILITY_REQUIRED: could not create event tap. Grant "
-                "Accessibility permission to your terminal/Python, then restart."
+                "Accessibility (and Input Monitoring) permission to TremorAssist, "
+                "then reopen."
             )
             return
 
-        self._run_loop_source = Quartz.CFMachPortCreateRunLoopSource(None, self._tap, 0)
-        self._run_loop = Quartz.CFRunLoopGetCurrent()
-        Quartz.CFRunLoopAddSource(
-            self._run_loop, self._run_loop_source, Quartz.kCFRunLoopCommonModes
-        )
-        Quartz.CGEventTapEnable(self._tap, True)
         self._running = True
-        self._on_status("RUNNING")
+        if self.mouse_active and self.keyboard_active:
+            self._on_status("RUNNING")
+        elif self.mouse_active:
+            self._on_status("RUNNING_MOUSE_ONLY")
+        else:
+            self._on_status("RUNNING_KEYBOARD_ONLY")
 
         Quartz.CFRunLoopRun()  # blocks until CFRunLoopStop
 
         # Teardown.
-        if self._tap:
-            Quartz.CGEventTapEnable(self._tap, False)
+        for tap in (self._mouse_tap, self._key_tap):
+            if tap:
+                Quartz.CGEventTapEnable(tap, False)
         self._running = False
         self._on_status("STOPPED")
 
@@ -151,13 +177,14 @@ class TremorEngine:
     def _callback(self, proxy, event_type, event, refcon):
         try:
             # The system disables a tap that takes too long or after certain
-            # input; re-enable and pass the event through untouched.
+            # input; re-enable both and pass the event through untouched.
             if event_type in (
                 Quartz.kCGEventTapDisabledByTimeout,
                 Quartz.kCGEventTapDisabledByUserInput,
             ):
-                if self._tap:
-                    Quartz.CGEventTapEnable(self._tap, True)
+                for tap in (getattr(self, "_mouse_tap", None), getattr(self, "_key_tap", None)):
+                    if tap:
+                        Quartz.CGEventTapEnable(tap, True)
                 return event
 
             s = self.settings
