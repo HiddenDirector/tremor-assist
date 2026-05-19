@@ -1,10 +1,3 @@
-"""Session tracking: persist per-session summaries and aggregate all-time totals.
-
-Pure Python (no Quartz/AppKit) so it is unit-testable on any platform. The
-engine produces a primitive ``snapshot()`` dict; this module appends it to a
-rolling history file and computes lifetime totals for the UI.
-"""
-
 from __future__ import annotations
 
 import json
@@ -15,7 +8,7 @@ from typing import Optional
 from .config import CONFIG_DIR
 
 HISTORY_PATH = os.path.join(CONFIG_DIR, "history.json")
-MAX_SESSIONS = 500  # keep the file bounded
+MAX_SESSIONS = 500
 
 
 def load_history() -> list[dict]:
@@ -28,10 +21,6 @@ def load_history() -> list[dict]:
 
 
 def record_session(snapshot: dict, *, min_movements: int = 5) -> Optional[dict]:
-    """Append a finished session to history. Skips trivial/empty sessions.
-
-    Returns the stored record, or None if it was too small to bother recording.
-    """
     if snapshot.get("movements", 0) < min_movements:
         return None
     record = dict(snapshot)
@@ -49,7 +38,6 @@ def record_session(snapshot: dict, *, min_movements: int = 5) -> Optional[dict]:
 
 
 def all_time_totals(history: Optional[list[dict]] = None) -> dict:
-    """Aggregate lifetime stats across all recorded sessions."""
     if history is None:
         history = load_history()
     totals = {
@@ -76,12 +64,7 @@ def all_time_totals(history: Optional[list[dict]] = None) -> dict:
 
 
 def humanize_distance_px(px: float) -> str:
-    """Pixels -> a friendly approximate physical distance.
-
-    ~100 px ≈ 1 inch on a typical display, so we convert to inches and then to
-    feet/meters once it gets large. This is a rough, motivational figure, not a
-    precise measurement.
-    """
+    # Rough: ~100 px ≈ 1 inch on a typical display.
     inches = px / 100.0
     if inches < 12:
         return f"{inches:.0f} in"

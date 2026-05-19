@@ -1,12 +1,4 @@
-"""Build a standalone TremorAssist.app with py2app.
-
-    .venv/bin/python setup.py py2app        # full standalone build -> dist/
-    .venv/bin/python setup.py py2app -A     # fast alias build (dev only)
-
-The standalone build bundles its own Python and the pyobjc frameworks, so the
-resulting app runs on a clean Mac with nothing installed. The user still grants
-Accessibility permission to the app on first run (required for any input tool).
-"""
+"""py2app build: .venv/bin/python setup.py py2app"""
 
 from setuptools import setup
 
@@ -25,7 +17,6 @@ OPTIONS = {
         "CFBundleShortVersionString": "0.1.0",
         "LSMinimumSystemVersion": "11.0",
         "NSHighResolutionCapable": True,
-        # Shown if macOS ever surfaces a usage prompt for input monitoring.
         "NSAppleEventsUsageDescription": "TremorAssist smooths your mouse and keyboard input.",
     },
 }

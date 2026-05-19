@@ -1,10 +1,8 @@
-"""User-tunable settings with JSON persistence and named presets."""
-
 from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 
 CONFIG_DIR = os.path.expanduser("~/.config/tremor-assist")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "settings.json")
@@ -12,26 +10,20 @@ CONFIG_PATH = os.path.join(CONFIG_DIR, "settings.json")
 
 @dataclass
 class Settings:
-    # Master switch.
     enabled: bool = True
 
-    # --- Mouse smoothing (One Euro Filter) ---
     smoothing_enabled: bool = True
     min_cutoff: float = 1.0      # lower = more smoothing of slow movement
     beta: float = 0.02           # higher = less lag during fast flicks
     d_cutoff: float = 1.0
 
-    # --- Keyboard debounce ---
     debounce_enabled: bool = True
-    debounce_ms: float = 60.0    # ignore repeat key-down within this window
+    debounce_ms: float = 60.0
 
-    # --- Mouse click debounce (anti double-click from tremor) ---
     click_debounce_enabled: bool = True
     click_debounce_ms: float = 120.0
 
 
-# Presets tuned for increasing tremor severity. Mild barely intervenes; Strong
-# trades responsiveness for maximum stability.
 PRESETS: dict[str, dict] = {
     "Off": dict(smoothing_enabled=False, debounce_enabled=False, click_debounce_enabled=False),
     "Mild": dict(

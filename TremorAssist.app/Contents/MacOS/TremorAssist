@@ -1,7 +1,5 @@
 #!/bin/bash
-# Double-clickable launcher for TremorAssist.
-# Resolves the project folder (three levels up from this executable),
-# bootstraps the virtual environment on first run, then starts the GUI.
+# Dev launcher: bootstraps the venv on first run, then starts the app.
 set -e
 
 BUNDLE_EXEC="${BASH_SOURCE[0]}"
@@ -12,8 +10,6 @@ LOG="$HOME/Library/Logs/TremorAssist.log"
 mkdir -p "$(dirname "$LOG")"
 
 if [ ! -d ".venv" ]; then
-  # First-launch setup. Show a small Finder dialog so the user isn't staring
-  # at nothing while pip installs.
   osascript -e 'display notification "Setting up for first use… this takes a moment." with title "TremorAssist"' 2>/dev/null || true
   python3 -m venv .venv >>"$LOG" 2>&1
   .venv/bin/python -m pip install --upgrade pip >>"$LOG" 2>&1

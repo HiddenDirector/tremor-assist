@@ -1,20 +1,4 @@
-"""Native macOS (Cocoa/AppKit) control panel for TremorAssist.
-
-Why AppKit instead of Tkinter: Apple's deprecated system Tk crashes on recent
-macOS versions, and we already depend on pyobjc for the event tap — so the UI
-is built natively. That also gives a real macOS look and feel.
-
-Design goals (users have hand tremors and may not be technical):
-  * Plain language — "Comfort level", not "min_cutoff".
-  * Big targets — a large on/off button and full-width comfort options.
-  * Safe defaults — pick a comfort level and you're done; sliders are tucked
-    behind an optional "Fine-tune" toggle.
-  * Hand-holding — clear status, and a one-click fix if permission is missing.
-
-The AppKit run loop owns the main thread; the engine's event tap runs on its
-own thread. The engine reports status by storing a string that a repeating
-timer (on the main thread) reads, so there are no cross-thread UI calls.
-"""
+"""Native macOS (AppKit) control panel for TremorAssist."""
 
 from __future__ import annotations
 
@@ -99,12 +83,6 @@ def _which_preset(settings: Settings):
 
 
 class TremorGraphView(NSView):
-    """A live sparkline of recent tremor amplitude (how much shake we caught).
-
-    Reads the engine's ring buffer each redraw. Taller spikes = more tremor the
-    filter absorbed at that moment. A flat line means a steady hand (or that
-    smoothing is off / idle).
-    """
 
     def initWithFrame_(self, frame):
         self = objc.super(TremorGraphView, self).initWithFrame_(frame)
@@ -117,7 +95,6 @@ class TremorGraphView(NSView):
         w, h = b.size.width, b.size.height
         NSColor.colorWithCalibratedWhite_alpha_(0.96, 1.0).set()
         NSBezierPath.fillRect_(b)
-        # baseline
         NSColor.colorWithCalibratedWhite_alpha_(0.85, 1.0).set()
         base = NSBezierPath.bezierPath()
         base.moveToPoint_((0, 2))
@@ -132,7 +109,7 @@ class TremorGraphView(NSView):
         n = len(samples)
         if n < 2:
             return
-        scale_max = max(6.0, max(samples))  # px; floor so tiny tremor stays readable
+        scale_max = max(6.0, max(samples))
         pad = 3.0
 
         def pt(i, v):
@@ -140,7 +117,6 @@ class TremorGraphView(NSView):
             y = pad + min(v / scale_max, 1.0) * (h - 2 * pad)
             return (x, y)
 
-        # Filled area under the curve.
         area = NSBezierPath.bezierPath()
         area.moveToPoint_((0, 2))
         for i, v in enumerate(samples):
@@ -150,7 +126,6 @@ class TremorGraphView(NSView):
         NSColor.colorWithCalibratedRed_green_blue_alpha_(47/255, 123/255, 232/255, 0.18).set()
         area.fill()
 
-        # The line itself.
         line = NSBezierPath.bezierPath()
         line.moveToPoint_(pt(0, samples[0]))
         for i, v in enumerate(samples[1:], start=1):
@@ -161,7 +136,6 @@ class TremorGraphView(NSView):
 
 
 class Controller(NSObject):
-    # ---- construction -------------------------------------------------------
     def initWithSettings_(self, settings):
         self = objc.super(Controller, self).init()
         if self is None:
@@ -182,10 +156,8 @@ class Controller(NSObject):
 
     @objc.python_method
     def _set_status_msg(self, msg):
-        # Called from the tap thread; just stash it. The timer (main thread) reads it.
         self._status_msg = msg
 
-    # ---- UI build -----------------------------------------------------------
     @objc.python_method
     def _build(self):
         style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable
@@ -197,12 +169,10 @@ class Controller(NSObject):
         self.window.setDelegate_(self)
         self.content = self.window.contentView()
 
-        # Header.
         self.title_lbl = _label("TremorAssist", size=24, bold=True)
         self.sub_lbl = _label("Steadier aim and cleaner key presses while you play.",
                               size=13, color=MUTED)
 
-        # Big on/off button.
         self.power_btn = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, INNER, 52))
         self.power_btn.setBezelStyle_(NSBezelStyleRegularSquare)
         self.power_btn.setFont_(NSFont.boldSystemFontOfSize_(16))
@@ -241,7 +211,6 @@ class Controller(NSObject):
             btn.setState_(NSOnState if name == selected else NSOffState)
             self._radios[name] = btn
 
-        # Advanced disclosure.
         self.adv_toggle = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, INNER, 22))
         self.adv_toggle.setBezelStyle_(NSBezelStyleRegularSquare)
         self.adv_toggle.setBordered_(False)
@@ -250,7 +219,6 @@ class Controller(NSObject):
         self.adv_toggle.setAction_("toggleAdvanced:")
         self.adv_toggle.setContentTintColor_(BLUE) if hasattr(self.adv_toggle, "setContentTintColor_") else None
 
-        # Advanced controls.
         self._adv_views = []
         self.chk_smooth = self._check("Smooth mouse movement", 1, self.settings.smoothing_enabled)
         self.lbl_steady = _label("Steadiness   (very steady ◀ ▶ very responsive)", size=12, color=MUTED)
@@ -268,7 +236,6 @@ class Controller(NSObject):
             self.chk_key, self.lbl_key, self.sld_key, self.chk_click, self.lbl_click, self.sld_click,
         ]
 
-        # --- Tracking section ---
         self.sep2 = self._sep()
         self.track_hdr = _label("Tracking", size=15, bold=True)
         self.track_sub = _label("Live tremor (taller spikes = more shake caught):",
@@ -283,7 +250,6 @@ class Controller(NSObject):
             self.now_lbl, self.session_lbl, self.alltime_lbl,
         ]
 
-        # Add everything to the content view.
         for v in ([self.title_lbl, self.sub_lbl, self.power_btn, self.status_lbl,
                    self.fix_btn, self.fix_btn2, self.sep1, self.comfort_hdr, self.comfort_sub]
                   + list(self._radios.values())
@@ -293,7 +259,6 @@ class Controller(NSObject):
         self._refresh_power()
         self._relayout()
 
-        # Status/stats refresh timer (main thread).
         self.timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             0.3, self, "tick:", None, True
         )
@@ -330,7 +295,6 @@ class Controller(NSObject):
         self._sliders[tag] = s
         return s
 
-    # ---- layout -------------------------------------------------------------
     @objc.python_method
     def _relayout(self):
         items = []  # (view, top, height)
@@ -392,7 +356,6 @@ class Controller(NSObject):
         for view, t, h, x, w in items:
             view.setFrame_(NSMakeRect(x, total_h - t - h, w, h))
 
-    # ---- actions ------------------------------------------------------------
     def togglePower_(self, sender):
         self.settings.enabled = not self.settings.enabled
         self._refresh_power()
@@ -414,10 +377,6 @@ class Controller(NSObject):
                 break
 
     def applyPresetNamed_(self, name):
-        """Apply a named comfort preset and reflect it across the UI.
-
-        Public entry point shared by the radio buttons and the menu-bar item.
-        """
         config.apply_preset(self.settings, name)
         self._sync_advanced()
         self._mark_custom()
@@ -475,12 +434,10 @@ class Controller(NSObject):
 
     @objc.python_method
     def _mark_custom(self):
-        # Highlight whichever preset (if any) the current settings now match.
         match = _which_preset(self.settings)
         for name, btn in self._radios.items():
             btn.setState_(NSOnState if name == match else NSOffState)
 
-    # ---- timer / status -----------------------------------------------------
     def tick_(self, timer):
         msg = self._status_msg
         if msg.startswith("ACCESSIBILITY_REQUIRED"):
@@ -528,20 +485,17 @@ class Controller(NSObject):
     @objc.python_method
     def _update_tracking(self):
         e = self._engine
-        # Live tremor readout + redraw the sparkline.
         self.now_lbl.setStringValue_(
             f"Tremor now: {e.avg_tremor_px():.1f} px avg · peak {e.peak_tremor_px:.0f} px"
         )
         self.graph.setNeedsDisplay_(True)
 
-        # This-session summary.
         self.session_lbl.setStringValue_(
             f"This session: steadied {e.events_smoothed:,} movements · "
             f"{e.jitter_removed_pct():.0f}% jitter removed · "
             f"{e.keys_suppressed} shaky presses · {e.clicks_suppressed} stray clicks"
         )
 
-        # All-time totals (previous sessions + what this session has added).
         prior = metrics.all_time_totals()
         movements = prior["movements"] + e.events_smoothed
         jitter = prior["jitter_removed_px"] + e.jitter_removed_px()
@@ -553,7 +507,6 @@ class Controller(NSObject):
             f"{keys} shaky presses caught"
         )
 
-    # ---- persistence / lifecycle -------------------------------------------
     _save_pending = False
 
     @objc.python_method
@@ -562,7 +515,6 @@ class Controller(NSObject):
 
     @objc.python_method
     def _save_soon(self):
-        # Coalesce rapid slider drags into one save.
         if not self._save_pending:
             self._save_pending = True
             NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
@@ -574,8 +526,7 @@ class Controller(NSObject):
         self._save()
 
     def windowShouldClose_(self, sender):
-        # Closing the window hides to the menu bar; the app keeps protecting
-        # input. Real quit (⌘Q / menu) is handled by the app delegate.
+        # Hide to the menu bar; the app keeps running. ⌘Q quits.
         self.window.orderOut_(None)
         self._save()
         return False

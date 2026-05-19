@@ -1,9 +1,5 @@
 #!/usr/bin/env bash
-# Build the standalone app and ad-hoc code-sign it.
-#
-# Ad-hoc signing gives the bundle a stable identity, which is what lets the
-# Accessibility / Input Monitoring permission you grant actually persist instead
-# of silently resetting (a common gotcha with unsigned apps).
+# Build the standalone app and ad-hoc code-sign it (so granted permissions stick).
 set -euo pipefail
 cd "$(dirname "$0")"
 

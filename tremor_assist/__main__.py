@@ -17,7 +17,6 @@ def _run_headless(preset: str | None) -> int:
     status = {"msg": ""}
     engine = TremorEngine(settings, on_status=lambda m: status.update(msg=m))
     engine.start()
-    # Give the tap a moment to come up and report status.
     time.sleep(0.5)
     if status["msg"].startswith("ACCESSIBILITY_REQUIRED"):
         print(
@@ -69,7 +68,7 @@ def main() -> int:
         settings = config.load()
         config.apply_preset(settings, args.preset)
         config.save(settings)
-    from .app import main as app_main  # lazy import so headless needs no AppKit
+    from .app import main as app_main
     app_main()
     return 0
 

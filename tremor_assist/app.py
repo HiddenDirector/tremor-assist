@@ -1,13 +1,3 @@
-"""Application shell: menu bar item, app menu, About panel, lifecycle.
-
-This turns the control panel into a real macOS app:
-  * a menu-bar (status bar) item so it keeps protecting input while the window
-    is closed and you're in a game;
-  * a standard app menu with About and Quit (⌘Q);
-  * closing the window hides to the menu bar instead of quitting;
-  * the session is recorded to history on real quit.
-"""
-
 from __future__ import annotations
 
 import os
@@ -29,7 +19,6 @@ from Foundation import NSObject
 from . import __version__, config, metrics
 from .ui import Controller
 
-# Strong references to long-lived objects (see main()).
 _KEEP_ALIVE: list = []
 
 
@@ -44,7 +33,6 @@ class AppDelegate(NSObject):
         self._build_status_item()
         return self
 
-    # ---- main menu (⌘Q etc.) -----------------------------------------------
     @objc.python_method
     def _build_main_menu(self):
         menubar = NSMenu.alloc().init()
@@ -74,7 +62,6 @@ class AppDelegate(NSObject):
         app_item.setSubmenu_(app_menu)
         NSApplication.sharedApplication().setMainMenu_(menubar)
 
-    # ---- menu bar status item ----------------------------------------------
     @objc.python_method
     def _build_status_item(self):
         bar = NSStatusBar.systemStatusBar()
@@ -93,7 +80,7 @@ class AppDelegate(NSObject):
             button.setTitle_("〰")
 
         menu = NSMenu.alloc().init()
-        menu.setDelegate_(self)  # menuNeedsUpdate_ refreshes dynamic state
+        menu.setDelegate_(self)
 
         self._status_header = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             "TremorAssist", "", "")
@@ -106,7 +93,6 @@ class AppDelegate(NSObject):
         self._toggle_item.setTarget_(self)
         menu.addItem_(self._toggle_item)
 
-        # Comfort presets submenu.
         presets_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             "Comfort level", "", "")
         presets_menu = NSMenu.alloc().init()
@@ -130,7 +116,6 @@ class AppDelegate(NSObject):
 
         self.status_item.setMenu_(menu)
 
-    # ---- dynamic menu refresh ----------------------------------------------
     def menuNeedsUpdate_(self, menu):
         s = self.controller.settings
         e = self.controller._engine
@@ -150,7 +135,6 @@ class AppDelegate(NSObject):
         for name, item in self._preset_items.items():
             item.setState_(NSOnState if name == current else NSOffState)
 
-    # ---- actions ------------------------------------------------------------
     def showAbout_(self, sender):
         NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
         NSApplication.sharedApplication().orderFrontStandardAboutPanelWithOptions_({
@@ -170,9 +154,8 @@ class AppDelegate(NSObject):
     def applyPreset_(self, sender):
         self.controller.applyPresetNamed_(sender.representedObject())
 
-    # ---- lifecycle ----------------------------------------------------------
     def applicationShouldTerminateAfterLastWindowClosed_(self, app):
-        return False  # keep running in the menu bar
+        return False
 
     def applicationWillTerminate_(self, notification):
         e = self.controller._engine
@@ -205,9 +188,7 @@ def main():
     controller = Controller.alloc().initWithSettings_(settings)
     delegate = AppDelegate.alloc().initWithController_(controller)
     app.setDelegate_(delegate)
-    # NSApplication's delegate is held weakly and NSApplication won't accept
-    # arbitrary Python attributes, so keep strong refs in a module global to
-    # stop the controller/delegate from being garbage-collected.
+    # NSApplication holds its delegate weakly; keep strong refs alive here.
     _KEEP_ALIVE.extend([controller, delegate])
 
     controller.show()

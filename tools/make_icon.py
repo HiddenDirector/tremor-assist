@@ -1,12 +1,4 @@
-"""Generate the TremorAssist app icon (.icns) with AppKit — no Pillow needed.
-
-The icon tells the product story: a faint jagged line (the hand tremor) with a
-bold steady line riding through it (the smoothed result), on a calm teal→blue
-rounded-rect badge. Renders every size Apple's iconset needs, then calls
-`iconutil` to produce assets/AppIcon.icns.
-
-Run:  .venv/bin/python tools/make_icon.py
-"""
+"""Generate assets/AppIcon.icns. Run: .venv/bin/python tools/make_icon.py"""
 
 from __future__ import annotations
 
@@ -60,7 +52,7 @@ def _draw(size: float) -> None:
     right = size * 0.82
     span = right - left
 
-    # Faint jagged "tremor" line behind.
+    # tremor line
     jag = NSBezierPath.bezierPath()
     jag.setLineWidth_(max(1.0, size * 0.022))
     jag.setLineCapStyle_(1)
@@ -76,7 +68,7 @@ def _draw(size: float) -> None:
     _color(255, 255, 255, 0.32).set()
     jag.stroke()
 
-    # Bold steady "smoothed" line through it.
+    # steady line
     smooth = NSBezierPath.bezierPath()
     smooth.setLineWidth_(max(1.5, size * 0.05))
     smooth.setLineCapStyle_(1)
@@ -90,7 +82,7 @@ def _draw(size: float) -> None:
     NSColor.whiteColor().set()
     smooth.stroke()
 
-    # A small target dot at the end of the steady line (precise aim).
+    # target dot
     dot_r = size * 0.055
     dot = NSBezierPath.bezierPathWithOvalInRect_(
         NSMakeRect(right - dot_r, mid + math.sin(1.5 * math.pi) * size * 0.10 - dot_r,
@@ -116,7 +108,6 @@ def _render_png(size: int, path: str) -> None:
 def main() -> None:
     os.makedirs(ICONSET, exist_ok=True)
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
-    # Apple's required iconset members: (base, scale).
     members = [(16, 1), (16, 2), (32, 1), (32, 2), (128, 1), (128, 2),
                (256, 1), (256, 2), (512, 1), (512, 2)]
     for base, scale in members:
