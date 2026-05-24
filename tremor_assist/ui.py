@@ -225,6 +225,12 @@ class Controller(NSObject):
         self.sld_steady = self._slider(1, 0.2, 4.0, self.settings.min_cutoff)
         self.lbl_resp = _label("Fast-move snappiness", size=12, color=MUTED)
         self.sld_resp = self._slider(2, 0.002, 0.08, self.settings.beta)
+        self.chk_dead = self._check("Hold steady when still", 5, self.settings.deadzone_enabled)
+        self.lbl_dead = _label("Hold strength   (gentle ◀ ▶ rock-solid)", size=12, color=MUTED)
+        self.sld_dead = self._slider(5, 0.0, 6.0, self.settings.deadzone_px)
+        self.chk_lock = self._check("Steady the aim during a click", 6, self.settings.click_lock_enabled)
+        self.lbl_lock = _label("Click steadiness   (off ◀ ▶ long)", size=12, color=MUTED)
+        self.sld_lock = self._slider(6, 0.0, 300.0, self.settings.click_lock_ms)
         self.chk_key = self._check("Ignore accidental repeat key presses", 2, self.settings.debounce_enabled)
         self.lbl_key = _label("Key cooldown   (off ◀ ▶ long)", size=12, color=MUTED)
         self.sld_key = self._slider(3, 0.0, 200.0, self.settings.debounce_ms)
@@ -233,6 +239,8 @@ class Controller(NSObject):
         self.sld_click = self._slider(4, 0.0, 300.0, self.settings.click_debounce_ms)
         self._adv_views = [
             self.chk_smooth, self.lbl_steady, self.sld_steady, self.lbl_resp, self.sld_resp,
+            self.chk_dead, self.lbl_dead, self.sld_dead,
+            self.chk_lock, self.lbl_lock, self.sld_lock,
             self.chk_key, self.lbl_key, self.sld_key, self.chk_click, self.lbl_click, self.sld_click,
         ]
 
@@ -336,6 +344,12 @@ class Controller(NSObject):
             add(self.sld_steady, 20, gap_after=10)
             add(self.lbl_resp, 16, gap_after=0)
             add(self.sld_resp, 20, gap_after=12)
+            add(self.chk_dead, 22, gap_after=4)
+            add(self.lbl_dead, 16, gap_after=0)
+            add(self.sld_dead, 20, gap_after=12)
+            add(self.chk_lock, 22, gap_after=4)
+            add(self.lbl_lock, 16, gap_after=0)
+            add(self.sld_lock, 20, gap_after=12)
             add(self.chk_key, 22, gap_after=4)
             add(self.lbl_key, 16, gap_after=0)
             add(self.sld_key, 20, gap_after=12)
@@ -405,6 +419,10 @@ class Controller(NSObject):
             self.settings.debounce_enabled = on
         elif tag == 3:
             self.settings.click_debounce_enabled = on
+        elif tag == 5:
+            self.settings.deadzone_enabled = on
+        elif tag == 6:
+            self.settings.click_lock_enabled = on
         self._mark_custom()
         self._save()
 
@@ -419,16 +437,24 @@ class Controller(NSObject):
             self.settings.debounce_ms = v
         elif tag == 4:
             self.settings.click_debounce_ms = v
+        elif tag == 5:
+            self.settings.deadzone_px = v
+        elif tag == 6:
+            self.settings.click_lock_ms = v
         self._mark_custom()
         self._save_soon()
 
     @objc.python_method
     def _sync_advanced(self):
         self.chk_smooth.setState_(NSOnState if self.settings.smoothing_enabled else NSOffState)
+        self.chk_dead.setState_(NSOnState if self.settings.deadzone_enabled else NSOffState)
+        self.chk_lock.setState_(NSOnState if self.settings.click_lock_enabled else NSOffState)
         self.chk_key.setState_(NSOnState if self.settings.debounce_enabled else NSOffState)
         self.chk_click.setState_(NSOnState if self.settings.click_debounce_enabled else NSOffState)
         self.sld_steady.setFloatValue_(self.settings.min_cutoff)
         self.sld_resp.setFloatValue_(self.settings.beta)
+        self.sld_dead.setFloatValue_(self.settings.deadzone_px)
+        self.sld_lock.setFloatValue_(self.settings.click_lock_ms)
         self.sld_key.setFloatValue_(self.settings.debounce_ms)
         self.sld_click.setFloatValue_(self.settings.click_debounce_ms)
 

@@ -7,7 +7,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from tremor_assist.one_euro import OneEuroFilter, OneEuroFilter2D  # noqa: E402
+from tremor_assist.one_euro import Deadzone2D, OneEuroFilter, OneEuroFilter2D  # noqa: E402
 
 
 def test_passthrough_first_sample():
@@ -57,9 +57,44 @@ def test_2d_independent_axes():
     assert x == 3.0 and y == 7.0
 
 
+def test_deadzone_holds_within_radius():
+    dz = Deadzone2D(radius=3.0)
+    dz.apply(100.0, 100.0)  # seed anchor
+    # small jitter inside the radius -> output does not move
+    out = dz.apply(101.5, 99.0)
+    assert out == (100.0, 100.0)
+
+
+def test_deadzone_follows_past_radius_without_jump():
+    dz = Deadzone2D(radius=3.0)
+    dz.apply(0.0, 0.0)
+    out = dz.apply(10.0, 0.0)
+    # moves to within `radius` of the target (10 - 3 = 7), not all the way
+    assert abs(out[0] - 7.0) < 1e-6 and abs(out[1]) < 1e-6
+
+
+def test_deadzone_kills_resting_tremor():
+    import random
+    random.seed(3)
+    # radius wider than the tremor cloud -> once anchored, it never moves
+    dz = Deadzone2D(radius=5.0)
+    moved = 0
+    for _ in range(500):
+        x = 50.0 + random.uniform(-1.5, 1.5)
+        y = 50.0 + random.uniform(-1.5, 1.5)
+        before = dz.anchor
+        dz.apply(x, y)
+        if before is not None and dz.anchor != before:
+            moved += 1
+    assert moved == 0
+
+
 if __name__ == "__main__":
     test_passthrough_first_sample()
     test_reduces_jitter_on_still_hand()
     test_tracks_fast_movement()
     test_2d_independent_axes()
+    test_deadzone_holds_within_radius()
+    test_deadzone_follows_past_radius_without_jump()
+    test_deadzone_kills_resting_tremor()
     print("all tests passed")

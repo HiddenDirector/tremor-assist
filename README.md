@@ -25,6 +25,10 @@ Everything is tunable live, with presets from **Mild** to **Strong**.
 ## Features
 
 - **One-click app** with its own icon — lives in the Dock *and* the menu bar.
+- **Hold-steady dead-zone** — the cursor stays rock-solid while you're trying
+  to hold still, then follows smoothly once you genuinely move (no lag).
+- **Click stabilization** — freezes the aim point for a moment around each
+  click so the tremor-jerk during the press doesn't pull your shot off target.
 - **Comfort levels** (Mild → Strong) in plain language; technical sliders are
   optional and hidden by default.
 - **Menu-bar control** — toggle protection or switch comfort level without

@@ -8,7 +8,7 @@ from typing import Callable, Optional
 import Quartz
 
 from .config import Settings
-from .one_euro import OneEuroFilter2D
+from .one_euro import Deadzone2D, OneEuroFilter2D
 
 _MOUSE_MOVE_TYPES = {
     Quartz.kCGEventMouseMoved,
@@ -37,7 +37,11 @@ class TremorEngine:
         self._on_status = on_status or (lambda _msg: None)
 
         self._filter = OneEuroFilter2D(settings.min_cutoff, settings.beta, settings.d_cutoff)
-        self._last_filtered: Optional[tuple[float, float]] = None
+        self._deadzone = Deadzone2D(settings.deadzone_px)
+        self._last_output: Optional[tuple[float, float]] = None
+
+        self._lock_until = 0.0
+        self._lock_pos: Optional[tuple[float, float]] = None
 
         self._last_keydown: dict[int, float] = {}
         self._last_click: dict[int, float] = {}
@@ -162,50 +166,76 @@ class TremorEngine:
 
     def _handle_mouse_move(self, event):
         s = self.settings
+        loc = Quartz.CGEventGetLocation(event)
+        now = time.monotonic()
+
+        # Freeze the aim point for a moment around a click so the tremor-jerk
+        # during the press doesn't drag the cursor off target.
+        if s.click_lock_enabled and self._lock_pos is not None and now < self._lock_until:
+            self._set_output(event, self._lock_pos[0], self._lock_pos[1])
+            return event
+
         if not s.smoothing_enabled:
-            self._last_filtered = None
+            self._last_output = None
             self._last_raw = None
+            self._deadzone.reset()
             return event
 
         self._filter.update_params(s.min_cutoff, s.beta, s.d_cutoff)
-        loc = Quartz.CGEventGetLocation(event)
-        now = time.monotonic()
         fx, fy = self._filter.filter(loc.x, loc.y, now)
 
-        Quartz.CGEventSetLocation(event, Quartz.CGPointMake(fx, fy))
-        if self._last_filtered is not None:
-            Quartz.CGEventSetIntegerValueField(
-                event, Quartz.kCGMouseEventDeltaX, int(round(fx - self._last_filtered[0]))
-            )
-            Quartz.CGEventSetIntegerValueField(
-                event, Quartz.kCGMouseEventDeltaY, int(round(fy - self._last_filtered[1]))
-            )
+        if s.deadzone_enabled:
+            self._deadzone.set_radius(s.deadzone_px)
+            ox, oy = self._deadzone.apply(fx, fy)
+        else:
+            ox, oy = fx, fy
 
         if self._last_raw is not None:
             self.raw_path_px += math.hypot(loc.x - self._last_raw[0], loc.y - self._last_raw[1])
-        if self._last_filtered is not None:
-            self.filtered_path_px += math.hypot(fx - self._last_filtered[0], fy - self._last_filtered[1])
-        amp = math.hypot(loc.x - fx, loc.y - fy)
+        if self._last_output is not None:
+            self.filtered_path_px += math.hypot(ox - self._last_output[0], oy - self._last_output[1])
+        amp = math.hypot(loc.x - ox, loc.y - oy)
         self._tremor_buf[self._tremor_idx] = amp
         self._tremor_idx = (self._tremor_idx + 1) % self._tremor_capacity
         if amp > self.peak_tremor_px:
             self.peak_tremor_px = amp
 
         self._last_raw = (loc.x, loc.y)
-        self._last_filtered = (fx, fy)
+        self._set_output(event, ox, oy)
         self.events_smoothed += 1
         return event
 
+    def _set_output(self, event, ox, oy):
+        Quartz.CGEventSetLocation(event, Quartz.CGPointMake(ox, oy))
+        if self._last_output is not None:
+            Quartz.CGEventSetIntegerValueField(
+                event, Quartz.kCGMouseEventDeltaX, int(round(ox - self._last_output[0]))
+            )
+            Quartz.CGEventSetIntegerValueField(
+                event, Quartz.kCGMouseEventDeltaY, int(round(oy - self._last_output[1]))
+            )
+        self._last_output = (ox, oy)
+
     def _handle_mouse_down(self, event_type, event):
         s = self.settings
-        if not s.click_debounce_enabled:
-            return event
         now = time.monotonic()
+
         last = self._last_click.get(event_type)
-        if last is not None and (now - last) < s.click_debounce_ms / 1000.0:
+        if s.click_debounce_enabled and last is not None and (now - last) < s.click_debounce_ms / 1000.0:
             self.clicks_suppressed += 1
             return None
         self._last_click[event_type] = now
+
+        # Anchor the click at the current (stabilized) cursor position and lock
+        # the cursor there briefly so the click lands where it was aimed.
+        if s.click_lock_enabled:
+            pos = self._last_output or (
+                lambda p: (p.x, p.y)
+            )(Quartz.CGEventGetLocation(event))
+            self._lock_pos = pos
+            self._lock_until = now + s.click_lock_ms / 1000.0
+            self._deadzone.reset(pos)
+            Quartz.CGEventSetLocation(event, Quartz.CGPointMake(pos[0], pos[1]))
         return event
 
     def _handle_key_down(self, event):

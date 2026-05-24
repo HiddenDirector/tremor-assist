@@ -75,6 +75,34 @@ class OneEuroFilter:
         return self._x.filter(value, _smoothing_alpha(cutoff, dt))
 
 
+class Deadzone2D:
+    """Holds the output still while the target stays within ``radius`` of the
+    anchor, then follows smoothly once it moves past it (no jump at the edge)."""
+
+    def __init__(self, radius: float = 1.5) -> None:
+        self.radius = float(radius)
+        self.anchor: tuple[float, float] | None = None
+
+    def set_radius(self, radius: float) -> None:
+        self.radius = float(radius)
+
+    def reset(self, point: tuple[float, float] | None = None) -> None:
+        self.anchor = point
+
+    def apply(self, x: float, y: float) -> tuple[float, float]:
+        if self.anchor is None:
+            self.anchor = (x, y)
+            return self.anchor
+        dx = x - self.anchor[0]
+        dy = y - self.anchor[1]
+        dist = math.hypot(dx, dy)
+        if dist <= self.radius or dist == 0.0:
+            return self.anchor
+        k = (dist - self.radius) / dist
+        self.anchor = (self.anchor[0] + dx * k, self.anchor[1] + dy * k)
+        return self.anchor
+
+
 class OneEuroFilter2D:
     def __init__(self, min_cutoff: float = 1.0, beta: float = 0.02, d_cutoff: float = 1.0) -> None:
         self._fx = OneEuroFilter(min_cutoff, beta, d_cutoff)
