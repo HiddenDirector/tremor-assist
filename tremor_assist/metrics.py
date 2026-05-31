@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import time
-from typing import Optional
 
 from .config import CONFIG_DIR
 
@@ -13,14 +12,14 @@ MAX_SESSIONS = 500
 
 def load_history() -> list[dict]:
     try:
-        with open(HISTORY_PATH, "r", encoding="utf-8") as fh:
+        with open(HISTORY_PATH, encoding="utf-8") as fh:
             data = json.load(fh)
         return data if isinstance(data, list) else []
     except (FileNotFoundError, ValueError):
         return []
 
 
-def record_session(snapshot: dict, *, min_movements: int = 5) -> Optional[dict]:
+def record_session(snapshot: dict, *, min_movements: int = 5) -> dict | None:
     if snapshot.get("movements", 0) < min_movements:
         return None
     record = dict(snapshot)
@@ -37,7 +36,7 @@ def record_session(snapshot: dict, *, min_movements: int = 5) -> Optional[dict]:
     return record
 
 
-def all_time_totals(history: Optional[list[dict]] = None) -> dict:
+def all_time_totals(history: list[dict] | None = None) -> dict:
     if history is None:
         history = load_history()
     totals = {

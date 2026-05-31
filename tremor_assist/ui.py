@@ -46,8 +46,11 @@ PRESET_INFO = {
     "Mild": "Light touch — smooths small shakes, stays very responsive.",
     "Moderate": "Balanced — a good starting point for most people.",
     "Strong": "Maximum steadiness for stronger tremors.",
+    "Auto": "Adapts to how much your hand is shaking, moment to moment.",
     "Off": "No assistance.",
 }
+
+PRESET_ORDER = ("Mild", "Moderate", "Strong", "Auto", "Off")
 
 
 def _rgb(r, g, b):
@@ -201,7 +204,7 @@ class Controller(NSObject):
                                   size=12, color=MUTED)
 
         selected = _which_preset(self.settings)
-        for name in ("Mild", "Moderate", "Strong", "Off"):
+        for name in PRESET_ORDER:
             btn = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, INNER, 38))
             btn.setButtonType_(NSRadioButton)
             btn.setTitle_(f"  {name}  —  {PRESET_INFO[name]}")
@@ -237,11 +240,14 @@ class Controller(NSObject):
         self.chk_click = self._check("Ignore accidental double-clicks", 3, self.settings.click_debounce_enabled)
         self.lbl_click = _label("Click cooldown   (off ◀ ▶ long)", size=12, color=MUTED)
         self.sld_click = self._slider(4, 0.0, 300.0, self.settings.click_debounce_ms)
+        self.chk_scroll = self._check("Steady the scroll wheel", 7, self.settings.scroll_stabilize_enabled)
+        self.chk_auto = self._check("Auto-adapt to my tremor (recommended)", 8, self.settings.auto_adapt_enabled)
         self._adv_views = [
             self.chk_smooth, self.lbl_steady, self.sld_steady, self.lbl_resp, self.sld_resp,
             self.chk_dead, self.lbl_dead, self.sld_dead,
             self.chk_lock, self.lbl_lock, self.sld_lock,
             self.chk_key, self.lbl_key, self.sld_key, self.chk_click, self.lbl_click, self.sld_click,
+            self.chk_scroll, self.chk_auto,
         ]
 
         self.sep2 = self._sep()
@@ -251,11 +257,12 @@ class Controller(NSObject):
         self.graph = TremorGraphView.alloc().initWithFrame_(NSMakeRect(0, 0, INNER, 50))
         self.graph.engine = self._engine
         self.now_lbl = _label("", size=12, color=TEXT)
+        self.freq_lbl = _label("", size=12, bold=True, color=BLUE)
         self.session_lbl = _label("", size=12, color=MUTED)
         self.alltime_lbl = _label("", size=12, color=MUTED)
         self._track_views = [
             self.sep2, self.track_hdr, self.track_sub, self.graph,
-            self.now_lbl, self.session_lbl, self.alltime_lbl,
+            self.now_lbl, self.freq_lbl, self.session_lbl, self.alltime_lbl,
         ]
 
         for v in ([self.title_lbl, self.sub_lbl, self.power_btn, self.status_lbl,
@@ -332,7 +339,7 @@ class Controller(NSObject):
             add(self._radios[name], 26, gap_after=4)
         top += 6
         self.adv_toggle.setTitle_(
-            ("▾  Hide fine-tuning" if self._advanced_visible else "▸  Fine-tune (optional)")
+            "▾  Hide fine-tuning" if self._advanced_visible else "▸  Fine-tune (optional)"
         )
         add(self.adv_toggle, 20, gap_after=8)
 
@@ -356,12 +363,15 @@ class Controller(NSObject):
             add(self.chk_click, 22, gap_after=4)
             add(self.lbl_click, 16, gap_after=0)
             add(self.sld_click, 20, gap_after=12)
+            add(self.chk_scroll, 22, gap_after=6)
+            add(self.chk_auto, 22, gap_after=4)
 
         add(self.sep2, 1, gap_after=10)
         add(self.track_hdr, 22, gap_after=2)
         add(self.track_sub, 16, gap_after=4)
         add(self.graph, 50, gap_after=8)
-        add(self.now_lbl, 16, gap_after=4)
+        add(self.now_lbl, 16, gap_after=2)
+        add(self.freq_lbl, 16, gap_after=6)
         add(self.session_lbl, 16, gap_after=2)
         add(self.alltime_lbl, 16, gap_after=0)
 
@@ -423,6 +433,10 @@ class Controller(NSObject):
             self.settings.deadzone_enabled = on
         elif tag == 6:
             self.settings.click_lock_enabled = on
+        elif tag == 7:
+            self.settings.scroll_stabilize_enabled = on
+        elif tag == 8:
+            self.settings.auto_adapt_enabled = on
         self._mark_custom()
         self._save()
 
@@ -451,6 +465,8 @@ class Controller(NSObject):
         self.chk_lock.setState_(NSOnState if self.settings.click_lock_enabled else NSOffState)
         self.chk_key.setState_(NSOnState if self.settings.debounce_enabled else NSOffState)
         self.chk_click.setState_(NSOnState if self.settings.click_debounce_enabled else NSOffState)
+        self.chk_scroll.setState_(NSOnState if self.settings.scroll_stabilize_enabled else NSOffState)
+        self.chk_auto.setState_(NSOnState if self.settings.auto_adapt_enabled else NSOffState)
         self.sld_steady.setFloatValue_(self.settings.min_cutoff)
         self.sld_resp.setFloatValue_(self.settings.beta)
         self.sld_dead.setFloatValue_(self.settings.deadzone_px)
@@ -516,10 +532,23 @@ class Controller(NSObject):
         )
         self.graph.setNeedsDisplay_(True)
 
+        a = e.get_analysis()
+        freq = a.get("freq_hz")
+        if freq and a.get("confidence", 0.0) >= 0.35:
+            self.freq_lbl.setStringValue_(
+                f"Dominant tremor: {freq:.1f} Hz · {a.get('amp_rms_px', 0.0):.1f} px "
+                f"— {a.get('band', '')}"
+            )
+            self.freq_lbl.setTextColor_(BLUE)
+        else:
+            self.freq_lbl.setStringValue_("Dominant tremor: measuring… (keep moving the mouse)")
+            self.freq_lbl.setTextColor_(MUTED)
+
         self.session_lbl.setStringValue_(
             f"This session: steadied {e.events_smoothed:,} movements · "
             f"{e.jitter_removed_pct():.0f}% jitter removed · "
-            f"{e.keys_suppressed} shaky presses · {e.clicks_suppressed} stray clicks"
+            f"{e.keys_suppressed} shaky presses · {e.clicks_suppressed} stray clicks · "
+            f"{e.scrolls_suppressed} scroll twitches"
         )
 
         prior = metrics.all_time_totals()

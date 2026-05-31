@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    name: test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install test tooling
+        run: python -m pip install --upgrade pip pytest ruff
+      # The Quartz/AppKit layers are macOS-only, but the filter, DSP, config and
+      # metrics cores are pure Python and fully tested here without them.
+      - name: Lint
+        run: ruff check tremor_assist tests
+      - name: Test
+        run: pytest -q

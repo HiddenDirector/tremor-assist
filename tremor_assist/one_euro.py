@@ -103,6 +103,53 @@ class Deadzone2D:
         return self.anchor
 
 
+class ScrollStabilizer:
+    """Suppresses tremor-induced stray scroll ticks.
+
+    A shaking hand on a wheel or trackpad produces brief *reverse* ticks against
+    the direction you're actually scrolling, making the page judder. This drops a
+    small opposite-direction tick that lands within ``reversal_ms`` of genuine
+    scrolling the other way, while passing through real, sustained reversals.
+
+    Pure logic (no Quartz) so it can be unit-tested directly.
+    """
+
+    def __init__(self, reversal_ms: float = 120.0, reversal_max: float = 1.0) -> None:
+        self.reversal_ms = float(reversal_ms)
+        self.reversal_max = float(reversal_max)
+        self._last_dir = 0
+        self._last_time: float | None = None
+
+    def set_params(self, reversal_ms: float, reversal_max: float) -> None:
+        self.reversal_ms = float(reversal_ms)
+        self.reversal_max = float(reversal_max)
+
+    def reset(self) -> None:
+        self._last_dir = 0
+        self._last_time = None
+
+    def filter(self, delta: float, now: float) -> float:
+        """Return the delta to emit (0.0 means swallow this tick)."""
+        if delta == 0.0:
+            return 0.0
+        direction = 1 if delta > 0 else -1
+        if (
+            self._last_dir != 0
+            and direction != self._last_dir
+            and self._last_time is not None
+            and (now - self._last_time) * 1000.0 < self.reversal_ms
+            and abs(delta) <= self.reversal_max
+        ):
+            # Small, quick reversal right after scrolling the other way: a tremor
+            # twitch. Swallow it but keep the clock running so a sustained
+            # reversal (several ticks) still gets through.
+            self._last_time = now
+            return 0.0
+        self._last_dir = direction
+        self._last_time = now
+        return delta
+
+
 class OneEuroFilter2D:
     def __init__(self, min_cutoff: float = 1.0, beta: float = 0.02, d_cutoff: float = 1.0) -> None:
         self._fx = OneEuroFilter(min_cutoff, beta, d_cutoff)

@@ -32,12 +32,17 @@ def _run_headless(preset: str | None) -> int:
     try:
         while True:
             time.sleep(1.0)
+            a = engine.get_analysis()
+            freq = a.get("freq_hz")
+            freq_str = f"{freq:.1f}Hz" if freq and a.get("confidence", 0) >= 0.35 else "—"
             print(
                 f"\rmovements={engine.events_smoothed:,} "
                 f"jitter_removed={engine.jitter_removed_pct():.0f}% "
+                f"tremor_freq={freq_str} "
                 f"tremor_now={engine.avg_tremor_px():.1f}px "
                 f"keys_debounced={engine.keys_suppressed} "
-                f"clicks_debounced={engine.clicks_suppressed}   ",
+                f"clicks_debounced={engine.clicks_suppressed} "
+                f"scroll_fixed={engine.scrolls_suppressed}   ",
                 end="",
                 flush=True,
             )

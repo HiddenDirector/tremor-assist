@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tremor-assist"
-version = "0.1.0"
-description = "System-wide mouse smoothing and key/click debounce to help gamers with hand tremors"
+version = "0.2.0"
+description = "System-wide mouse smoothing, tremor-frequency analysis and key/click debounce to help gamers with hand tremors"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "HiddenDirector" }]
-keywords = ["accessibility", "tremor", "gaming", "input", "macos", "one-euro-filter"]
+keywords = ["accessibility", "tremor", "gaming", "input", "macos", "one-euro-filter", "dsp", "signal-processing"]
 dependencies = [
   "pyobjc-framework-Quartz>=10.0",
   "pyobjc-framework-Cocoa>=10.0",
@@ -21,3 +21,24 @@ tremor-assist = "tremor_assist.__main__:main"
 
 [tool.setuptools]
 packages = ["tremor_assist"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+# pyflakes, pycodestyle, isort, pyupgrade, bugbear, comprehensions
+select = ["E", "F", "I", "UP", "B", "C4"]
+# Quartz/AppKit selectors and constants are intentionally non-PEP8.
+# C408: dict(...) is used deliberately for readable preset tables.
+ignore = ["E741", "C408"]
+
+[tool.ruff.lint.per-file-ignores]
+# Long lines here are unavoidable AppKit/Quartz selector names.
+"tremor_assist/ui.py" = ["E501"]
+"tremor_assist/app.py" = ["E501"]
+"tools/make_icon.py" = ["E501"]

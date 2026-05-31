@@ -1,6 +1,11 @@
 # TremorAssist
 
-**System-wide input smoothing for gamers with hand tremors (macOS).**
+[![CI](https://github.com/usamehachasan67/tremor-assist/actions/workflows/ci.yml/badge.svg)](https://github.com/usamehachasan67/tremor-assist/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-3.9%2B-blue)
+![Platform](https://img.shields.io/badge/platform-macOS-lightgrey)
+![License](https://img.shields.io/badge/license-MIT-green)
+
+**System-wide input smoothing — and live tremor analysis — for gamers with hand tremors (macOS).**
 
 Hand tremor (essential tremor, Parkinson's, post-stroke, fatigue, etc.) makes
 PC gaming hard in two specific ways:
@@ -17,8 +22,15 @@ without modifying any game:
 - **Keyboard debounce** — ignores a repeat key-down that lands within a short
   window of the previous one (auto-repeat from *holding* a key is preserved).
 - **Click debounce** — prevents tremor-induced accidental double-clicks/misfires.
+- **Scroll stabilization** — drops stray reverse scroll ticks so a shaking hand
+  on the wheel doesn't make the page judder.
 
-Everything is tunable live, with presets from **Mild** to **Strong**.
+It also **measures your tremor in real time** — a dependency-free DSP pipeline
+estimates the dominant tremor *frequency* (Hz) and amplitude from the live
+cursor signal, and an **Auto** mode uses that estimate to size the assistance to
+how much your hand is actually shaking, moment to moment.
+
+Everything is tunable live, with presets from **Mild** to **Strong**, plus **Auto**.
 
 ---
 
@@ -29,12 +41,18 @@ Everything is tunable live, with presets from **Mild** to **Strong**.
   to hold still, then follows smoothly once you genuinely move (no lag).
 - **Click stabilization** — freezes the aim point for a moment around each
   click so the tremor-jerk during the press doesn't pull your shot off target.
-- **Comfort levels** (Mild → Strong) in plain language; technical sliders are
-  optional and hidden by default.
+- **Tremor frequency analysis** — live estimate of your dominant tremor
+  frequency (Hz) and amplitude, with a band label (rest-range 3–6 Hz vs
+  action-range 6–12 Hz). Informational, not a diagnosis.
+- **Auto-adapt mode** — sizes the hold-steady dead-zone to your *measured*
+  tremor amplitude in real time, so help scales up and down as your hand does.
+- **Scroll stabilization** — suppresses tremor-induced stray reverse scroll ticks.
+- **Comfort levels** (Mild → Strong, plus Auto) in plain language; technical
+  sliders are optional and hidden by default.
 - **Menu-bar control** — toggle protection or switch comfort level without
   opening the window; closing the window keeps it running while you game.
-- **Live tracking** — a real-time tremor graph, "% jitter removed", and
-  per-session + all-time history.
+- **Live tracking** — a real-time tremor graph, dominant-frequency readout,
+  "% jitter removed", and per-session + all-time history.
 - **One Euro Filter** smoothing plus keyboard/click debounce, system-wide.
 
 ## Requirements
@@ -101,28 +119,67 @@ repo root is the developer launcher (it reuses the project's virtualenv); the
 | **Flick responsiveness** (`beta`) | Higher = the filter relaxes faster during quick movements, reducing lag on flicks. |
 | **Key debounce window** | A second press of the same key within this many ms is treated as a bounce and dropped. |
 | **Click debounce window** | Same idea for mouse buttons. |
+| **Steady the scroll wheel** | Drops a small reverse scroll tick that lands just after scrolling the other way (a tremor twitch). |
+| **Auto-adapt to my tremor** | Continuously widens the hold-steady dead-zone toward your measured tremor amplitude (never below your manual setting, capped for safety). |
 
 Start on **Moderate**. If aiming still shakes, move toward **Strong** (or lower
-Stability). If it feels laggy, raise Stability and Flick responsiveness.
+Stability). If it feels laggy, raise Stability and Flick responsiveness. Not sure?
+Pick **Auto** and let it follow your hand.
+
+## How the tremor analysis works
+
+Pathological tremor is a roughly sinusoidal oscillation in a narrow band —
+Parkinsonian rest tremor sits around **3–6 Hz**, essential/action tremor around
+**6–12 Hz** — whereas *deliberate* aiming is slow, low-frequency drift. That
+separation in the frequency domain is what makes tremor measurable from the
+cursor path alone. The pipeline in [`analysis.py`](tremor_assist/analysis.py) is
+dependency-free (no NumPy/SciPy):
+
+1. **Buffer** the last ~2 s of raw pointer samples (timestamped, irregularly
+   sampled as mouse events arrive).
+2. **Resample** onto a uniform 120 Hz grid by linear interpolation, since a DFT
+   assumes even spacing.
+3. **Detrend** each axis by subtracting its least-squares line — this removes the
+   deliberate movement component, leaving only the oscillation.
+4. **Window** (Hann) to suppress spectral leakage, then evaluate a **direct DFT**
+   over a 3–14 Hz grid and combine the two axes' power spectra.
+5. **Peak-pick** the spectrum with parabolic interpolation for sub-bin frequency
+   resolution, and compute a **confidence** score from how concentrated the
+   spectrum is around that peak (a clean sinusoid spikes; broadband noise spreads).
+
+The result drives the on-screen readout and the **Auto** mode's adaptive
+dead-zone. The whole module is covered by unit tests that feed synthetic,
+unevenly-sampled sinusoids (with and without deliberate drift) and assert the
+recovered frequency, amplitude, and confidence.
 
 ## Architecture
 
 ```
 tremor_assist/
-  one_euro.py   Pure-Python One Euro Filter (unit-tested, no platform deps)
-  engine.py     Quartz CGEventTap: smooths motion, debounces keys/clicks
-  config.py     Settings dataclass, JSON persistence, presets
+  one_euro.py   Pure-Python One Euro Filter + dead-zone + scroll stabilizer
+                (unit-tested, no platform deps)
+  analysis.py   Dependency-free DSP: detrend → resample → windowed DFT →
+                dominant tremor frequency / amplitude / confidence
+  engine.py     Quartz CGEventTap: smooths motion, debounces keys/clicks,
+                stabilizes scroll, feeds the analyzer, drives Auto adaptation
+  config.py     Settings dataclass, JSON persistence, presets (incl. Auto)
   ui.py         Native macOS (Cocoa/AppKit) control panel — comfort levels,
-                big on/off button, optional fine-tuning, live stats
+                big on/off button, live frequency readout, optional fine-tuning
   __main__.py   GUI / headless entry point
 TremorAssist.app  Double-clickable launcher bundle
 tests/
-  test_one_euro.py
+  test_one_euro.py   filter, dead-zone behavior
+  test_analysis.py   frequency/amplitude recovery from synthetic tremor
+  test_scroll.py     scroll-reversal suppression
+  test_config.py     settings persistence + presets
+  test_metrics.py    session history aggregation
 ```
 
 The event tap runs on a background thread with its own CFRunLoop; the GUI owns
 the main thread. The callback only reads a shared `Settings` object, so changes
-apply instantly.
+apply instantly. The signal-processing and filter cores have **zero platform
+dependencies**, so they're tested on every push via CI without needing macOS at
+the GUI layer.
 
 ## Scope & limitations
 
@@ -137,9 +194,16 @@ apply instantly.
 
 ## Tests
 
+The filter and DSP cores are pure Python, so the suite runs on any platform:
+
 ```bash
-.venv/bin/python tests/test_one_euro.py
+.venv/bin/python -m pip install pytest ruff
+.venv/bin/python -m pytest        # 33 tests
+.venv/bin/ruff check .            # lint
 ```
+
+CI ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs the same on
+Python 3.9–3.12 on every push.
 
 ## License
 

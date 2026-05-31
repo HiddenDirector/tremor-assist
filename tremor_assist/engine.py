@@ -3,12 +3,13 @@ from __future__ import annotations
 import math
 import threading
 import time
-from typing import Callable, Optional
+from typing import Callable
 
 import Quartz
 
+from .analysis import TremorAnalyzer
 from .config import Settings
-from .one_euro import Deadzone2D, OneEuroFilter2D
+from .one_euro import Deadzone2D, OneEuroFilter2D, ScrollStabilizer
 
 _MOUSE_MOVE_TYPES = {
     Quartz.kCGEventMouseMoved,
@@ -21,6 +22,7 @@ _MOUSE_DOWN_TYPES = {
     Quartz.kCGEventRightMouseDown,
     Quartz.kCGEventOtherMouseDown,
 }
+_SCROLL_TYPE = Quartz.kCGEventScrollWheel
 _KEY_DOWN_TYPE = Quartz.kCGEventKeyDown
 
 
@@ -32,16 +34,19 @@ def _event_mask(*types: int) -> int:
 
 
 class TremorEngine:
-    def __init__(self, settings: Settings, on_status: Optional[Callable[[str], None]] = None) -> None:
+    def __init__(self, settings: Settings, on_status: Callable[[str], None] | None = None) -> None:
         self.settings = settings
         self._on_status = on_status or (lambda _msg: None)
 
         self._filter = OneEuroFilter2D(settings.min_cutoff, settings.beta, settings.d_cutoff)
         self._deadzone = Deadzone2D(settings.deadzone_px)
-        self._last_output: Optional[tuple[float, float]] = None
+        self._scroll = ScrollStabilizer(settings.scroll_reversal_ms, settings.scroll_reversal_max)
+        self._analyzer = TremorAnalyzer()
+        self._adaptive_radius = settings.deadzone_px
+        self._last_output: tuple[float, float] | None = None
 
         self._lock_until = 0.0
-        self._lock_pos: Optional[tuple[float, float]] = None
+        self._lock_pos: tuple[float, float] | None = None
 
         self._last_keydown: dict[int, float] = {}
         self._last_click: dict[int, float] = {}
@@ -49,10 +54,11 @@ class TremorEngine:
         self.events_smoothed = 0
         self.keys_suppressed = 0
         self.clicks_suppressed = 0
+        self.scrolls_suppressed = 0
 
         self.raw_path_px = 0.0
         self.filtered_path_px = 0.0
-        self._last_raw: Optional[tuple[float, float]] = None
+        self._last_raw: tuple[float, float] | None = None
         self._tremor_capacity = 180
         self._tremor_buf = [0.0] * self._tremor_capacity
         self._tremor_idx = 0
@@ -67,7 +73,7 @@ class TremorEngine:
         self.mouse_active = False
         self.keyboard_active = False
         self._run_loop = None
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self._running = False
 
     def is_running(self) -> bool:
@@ -107,7 +113,7 @@ class TremorEngine:
 
         # Pointer tap needs Accessibility; keyboard tap needs Input Monitoring.
         # Keep them separate so one works when only one permission is granted.
-        mouse_mask = _event_mask(*_MOUSE_MOVE_TYPES, *_MOUSE_DOWN_TYPES)
+        mouse_mask = _event_mask(*_MOUSE_MOVE_TYPES, *_MOUSE_DOWN_TYPES, _SCROLL_TYPE)
         self._mouse_tap, self._mouse_source = self._make_tap(mouse_mask)
         self._key_tap, self._key_source = self._make_tap(_event_mask(_KEY_DOWN_TYPE))
 
@@ -158,6 +164,8 @@ class TremorEngine:
                 return self._handle_mouse_move(event)
             if event_type in _MOUSE_DOWN_TYPES:
                 return self._handle_mouse_down(event_type, event)
+            if event_type == _SCROLL_TYPE:
+                return self._handle_scroll(event)
             if event_type == _KEY_DOWN_TYPE:
                 return self._handle_key_down(event)
             return event
@@ -181,19 +189,25 @@ class TremorEngine:
             self._deadzone.reset()
             return event
 
+        # Feed the raw path to the tremor analyzer (frequency/amplitude estimate).
+        self._analyzer.add(now, loc.x, loc.y)
+        self._analyzer.analyze(now)
+
         self._filter.update_params(s.min_cutoff, s.beta, s.d_cutoff)
         fx, fy = self._filter.filter(loc.x, loc.y, now)
 
         if s.deadzone_enabled:
-            self._deadzone.set_radius(s.deadzone_px)
+            self._deadzone.set_radius(self._effective_deadzone(s))
             ox, oy = self._deadzone.apply(fx, fy)
         else:
             ox, oy = fx, fy
 
         if self._last_raw is not None:
-            self.raw_path_px += math.hypot(loc.x - self._last_raw[0], loc.y - self._last_raw[1])
+            self.raw_path_px += math.hypot(
+                loc.x - self._last_raw[0], loc.y - self._last_raw[1])
         if self._last_output is not None:
-            self.filtered_path_px += math.hypot(ox - self._last_output[0], oy - self._last_output[1])
+            self.filtered_path_px += math.hypot(
+                ox - self._last_output[0], oy - self._last_output[1])
         amp = math.hypot(loc.x - ox, loc.y - oy)
         self._tremor_buf[self._tremor_idx] = amp
         self._tremor_idx = (self._tremor_idx + 1) % self._tremor_capacity
@@ -204,6 +218,40 @@ class TremorEngine:
         self._set_output(event, ox, oy)
         self.events_smoothed += 1
         return event
+
+    def _effective_deadzone(self, s) -> float:
+        """Manual radius, optionally widened toward the measured tremor so the
+        hold-steady zone tracks how much the hand is actually shaking. Smoothed
+        and clamped so it never snaps or shrinks below the user's setting."""
+        target = s.deadzone_px
+        if s.auto_adapt_enabled:
+            amp = self._analyzer.analyze().get("amp_rms_px", 0.0)
+            want = min(s.auto_adapt_max_px, max(s.deadzone_px, amp * s.auto_adapt_strength))
+            target = want
+        # Exponential glide toward the target (per-event, ~time-constant a few
+        # hundred ms at typical event rates) to avoid visible steps.
+        self._adaptive_radius += 0.05 * (target - self._adaptive_radius)
+        return self._adaptive_radius
+
+    def _handle_scroll(self, event):
+        s = self.settings
+        if not s.scroll_stabilize_enabled:
+            return event
+        self._scroll.set_params(s.scroll_reversal_ms, s.scroll_reversal_max)
+        now = time.monotonic()
+        d1 = Quartz.CGEventGetIntegerValueField(
+            event, Quartz.kCGScrollWheelEventDeltaAxis1
+        )
+        if d1 == 0:
+            return event
+        out = self._scroll.filter(d1, now)
+        if out == 0.0:
+            self.scrolls_suppressed += 1
+            return None
+        return event
+
+    def get_analysis(self) -> dict:
+        return self._analyzer.analyze()
 
     def _set_output(self, event, ox, oy):
         Quartz.CGEventSetLocation(event, Quartz.CGPointMake(ox, oy))
@@ -221,7 +269,8 @@ class TremorEngine:
         now = time.monotonic()
 
         last = self._last_click.get(event_type)
-        if s.click_debounce_enabled and last is not None and (now - last) < s.click_debounce_ms / 1000.0:
+        if (s.click_debounce_enabled and last is not None
+                and (now - last) < s.click_debounce_ms / 1000.0):
             self.clicks_suppressed += 1
             return None
         self._last_click[event_type] = now
@@ -270,6 +319,7 @@ class TremorEngine:
         return sum(recent) / len(recent) if recent else 0.0
 
     def snapshot(self) -> dict:
+        analysis = self._analyzer.analyze()
         return {
             "duration_s": round(time.time() - self.started_at, 1),
             "movements": self.events_smoothed,
@@ -280,4 +330,7 @@ class TremorEngine:
             "peak_tremor_px": round(self.peak_tremor_px, 1),
             "keys_suppressed": self.keys_suppressed,
             "clicks_suppressed": self.clicks_suppressed,
+            "scrolls_suppressed": self.scrolls_suppressed,
+            "tremor_freq_hz": analysis.get("freq_hz"),
+            "tremor_amp_rms_px": analysis.get("amp_rms_px", 0.0),
         }

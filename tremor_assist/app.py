@@ -96,7 +96,7 @@ class AppDelegate(NSObject):
         presets_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             "Comfort level", "", "")
         presets_menu = NSMenu.alloc().init()
-        for name in ("Mild", "Moderate", "Strong", "Off"):
+        for name in ("Mild", "Moderate", "Strong", "Auto", "Off"):
             it = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(name, "applyPreset:", "")
             it.setTarget_(self)
             it.setRepresentedObject_(name)

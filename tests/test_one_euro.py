@@ -1,6 +1,5 @@
 """Tests for the One Euro Filter — these run on any platform (no Quartz needed)."""
 
-import math
 import os
 import random
 import sys
