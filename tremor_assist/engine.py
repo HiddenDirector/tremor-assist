@@ -7,6 +7,7 @@ from typing import Callable
 
 import Quartz
 
+from .adaptive import AdaptiveController
 from .analysis import TremorAnalyzer
 from .config import Settings
 from .one_euro import Deadzone2D, OneEuroFilter2D, ScrollStabilizer
@@ -42,7 +43,8 @@ class TremorEngine:
         self._deadzone = Deadzone2D(settings.deadzone_px)
         self._scroll = ScrollStabilizer(settings.scroll_reversal_ms, settings.scroll_reversal_max)
         self._analyzer = TremorAnalyzer()
-        self._adaptive_radius = settings.deadzone_px
+        self._adaptive = AdaptiveController(deadzone_max=settings.auto_adapt_max_px)
+        self._last_move_t: float | None = None
         self._last_output: tuple[float, float] | None = None
 
         self._lock_until = 0.0
@@ -191,13 +193,26 @@ class TremorEngine:
 
         # Feed the raw path to the tremor analyzer (frequency/amplitude estimate).
         self._analyzer.add(now, loc.x, loc.y)
-        self._analyzer.analyze(now)
+        analysis = self._analyzer.analyze(now)
 
-        self._filter.update_params(s.min_cutoff, s.beta, s.d_cutoff)
+        # Pick effective filter / dead-zone parameters. Auto mode runs a closed
+        # loop that retunes them from the live tremor estimate; otherwise use the
+        # user's chosen values directly.
+        if s.auto_adapt_enabled:
+            dt = (now - self._last_move_t) if self._last_move_t is not None else 1.0 / 120.0
+            cutoff, beta, dz = self._adaptive.update(
+                dt, analysis, s.min_cutoff, s.beta, s.deadzone_px, s.auto_adapt_strength)
+        else:
+            if self._adaptive.state()["cutoff"] is not None:
+                self._adaptive.reset()
+            cutoff, beta, dz = s.min_cutoff, s.beta, s.deadzone_px
+        self._last_move_t = now
+
+        self._filter.update_params(cutoff, beta, s.d_cutoff)
         fx, fy = self._filter.filter(loc.x, loc.y, now)
 
         if s.deadzone_enabled:
-            self._deadzone.set_radius(self._effective_deadzone(s))
+            self._deadzone.set_radius(dz)
             ox, oy = self._deadzone.apply(fx, fy)
         else:
             ox, oy = fx, fy
@@ -219,20 +234,6 @@ class TremorEngine:
         self.events_smoothed += 1
         return event
 
-    def _effective_deadzone(self, s) -> float:
-        """Manual radius, optionally widened toward the measured tremor so the
-        hold-steady zone tracks how much the hand is actually shaking. Smoothed
-        and clamped so it never snaps or shrinks below the user's setting."""
-        target = s.deadzone_px
-        if s.auto_adapt_enabled:
-            amp = self._analyzer.analyze().get("amp_rms_px", 0.0)
-            want = min(s.auto_adapt_max_px, max(s.deadzone_px, amp * s.auto_adapt_strength))
-            target = want
-        # Exponential glide toward the target (per-event, ~time-constant a few
-        # hundred ms at typical event rates) to avoid visible steps.
-        self._adaptive_radius += 0.05 * (target - self._adaptive_radius)
-        return self._adaptive_radius
-
     def _handle_scroll(self, event):
         s = self.settings
         if not s.scroll_stabilize_enabled:
@@ -251,7 +252,15 @@ class TremorEngine:
         return event
 
     def get_analysis(self) -> dict:
-        return self._analyzer.analyze()
+        """Latest tremor estimate. Safe to call from the UI thread."""
+        return self._analyzer.peek()
+
+    def get_adaptive_state(self) -> dict:
+        """What Auto mode is currently doing (effective params + blend). Safe to
+        call from the UI thread."""
+        st = self._adaptive.state()
+        st["active"] = self.settings.auto_adapt_enabled
+        return st
 
     def _set_output(self, event, ox, oy):
         Quartz.CGEventSetLocation(event, Quartz.CGPointMake(ox, oy))
@@ -319,7 +328,7 @@ class TremorEngine:
         return sum(recent) / len(recent) if recent else 0.0
 
     def snapshot(self) -> dict:
-        analysis = self._analyzer.analyze()
+        analysis = self._analyzer.peek()
         return {
             "duration_s": round(time.time() - self.started_at, 1),
             "movements": self.events_smoothed,

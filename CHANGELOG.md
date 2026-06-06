@@ -3,6 +3,28 @@
 All notable changes to TremorAssist are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.0]
+
+### Added
+- **Closed-loop Auto mode** (`adaptive.py`): a real adaptive controller that
+  retunes the One Euro Filter from the live tremor estimate. It drives the rest
+  cutoff from the measured tremor *frequency* (constant-attenuation law:
+  `min_cutoff = ratio · f_tremor`), sizes the dead-zone and lowers `beta` from
+  the amplitude, gates everything by confidence, and glides with a time
+  constant. Replaces the previous amplitude-only dead-zone widening.
+- **"Measure my tremor" calibration**: a 5-second measurement that reads your
+  tremor signature and recommends a comfort level (`recommend_preset`).
+- **Live Auto readout** in the panel: shows the effective smoothing cutoff,
+  hold-zone, and how strongly Auto is currently engaged.
+- **Auto strength** slider (gentle ↔ aggressive).
+- Smoothed (EMA) dominant-frequency display so the readout doesn't flicker.
+- 14 new unit tests for the controller and recommendation logic (47 total).
+
+### Fixed
+- **Data race**: the UI thread no longer recomputes the spectrum on the engine
+  thread's sample buffers. Analysis is computed only on the engine thread;
+  readers use a lock-free `peek()` of the atomically-published cached result.
+
 ## [0.2.0]
 
 ### Added

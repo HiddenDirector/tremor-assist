@@ -160,12 +160,21 @@ class TremorAnalyzer:
             self._y.popleft()
 
     def analyze(self, now: float | None = None) -> dict:
+        """Recompute the estimate (throttled). Call only from the thread that
+        owns :meth:`add` — i.e. the engine's event-tap thread — since it reads
+        the sample buffers. Other threads should use :meth:`peek`."""
         if now is None:
             now = self._t[-1] if self._t else 0.0
         if now - self._last_compute < self.recompute_every:
             return self._cached
         self._last_compute = now
         self._cached = self._compute()
+        return self._cached
+
+    def peek(self) -> dict:
+        """Return the most recent estimate without recomputing or touching the
+        sample buffers. Thread-safe to call from the UI/main thread (the cached
+        dict is replaced atomically by :meth:`analyze`)."""
         return self._cached
 
     # -- internals -----------------------------------------------------------

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 import objc
 from AppKit import (
@@ -33,6 +34,7 @@ from AppKit import (
 from Foundation import NSURL, NSObject
 
 from . import config, metrics
+from .adaptive import recommend_preset
 from .config import Settings
 
 W = 470          # window width
@@ -152,6 +154,10 @@ class Controller(NSObject):
         self._radios = {}
         self._sliders = {}
         self._checks = {}
+        self._freq_ema = None       # smoothed frequency for a steady readout
+        self._calibrating = False
+        self._calib_until = 0.0
+        self._calib_samples = []
         self._engine = TremorEngine(settings, on_status=self._set_status_msg)
         self._build()
         self._engine.start()
@@ -242,12 +248,14 @@ class Controller(NSObject):
         self.sld_click = self._slider(4, 0.0, 300.0, self.settings.click_debounce_ms)
         self.chk_scroll = self._check("Steady the scroll wheel", 7, self.settings.scroll_stabilize_enabled)
         self.chk_auto = self._check("Auto-adapt to my tremor (recommended)", 8, self.settings.auto_adapt_enabled)
+        self.lbl_autostr = _label("Auto strength   (gentle ◀ ▶ aggressive)", size=12, color=MUTED)
+        self.sld_autostr = self._slider(9, 0.5, 2.5, self.settings.auto_adapt_strength)
         self._adv_views = [
             self.chk_smooth, self.lbl_steady, self.sld_steady, self.lbl_resp, self.sld_resp,
             self.chk_dead, self.lbl_dead, self.sld_dead,
             self.chk_lock, self.lbl_lock, self.sld_lock,
             self.chk_key, self.lbl_key, self.sld_key, self.chk_click, self.lbl_click, self.sld_click,
-            self.chk_scroll, self.chk_auto,
+            self.chk_scroll, self.chk_auto, self.lbl_autostr, self.sld_autostr,
         ]
 
         self.sep2 = self._sep()
@@ -258,11 +266,18 @@ class Controller(NSObject):
         self.graph.engine = self._engine
         self.now_lbl = _label("", size=12, color=TEXT)
         self.freq_lbl = _label("", size=12, bold=True, color=BLUE)
+        self.auto_lbl = _label("", size=12, color=GREEN)
+        self.calib_btn = NSButton.alloc().initWithFrame_(NSMakeRect(0, 0, INNER, 30))
+        self.calib_btn.setBezelStyle_(NSBezelStyleRegularSquare)
+        self.calib_btn.setTitle_("Measure my tremor")
+        self.calib_btn.setTarget_(self)
+        self.calib_btn.setAction_("startCalibration:")
         self.session_lbl = _label("", size=12, color=MUTED)
         self.alltime_lbl = _label("", size=12, color=MUTED)
         self._track_views = [
             self.sep2, self.track_hdr, self.track_sub, self.graph,
-            self.now_lbl, self.freq_lbl, self.session_lbl, self.alltime_lbl,
+            self.now_lbl, self.freq_lbl, self.auto_lbl, self.calib_btn,
+            self.session_lbl, self.alltime_lbl,
         ]
 
         for v in ([self.title_lbl, self.sub_lbl, self.power_btn, self.status_lbl,
@@ -365,13 +380,18 @@ class Controller(NSObject):
             add(self.sld_click, 20, gap_after=12)
             add(self.chk_scroll, 22, gap_after=6)
             add(self.chk_auto, 22, gap_after=4)
+            add(self.lbl_autostr, 16, gap_after=0)
+            add(self.sld_autostr, 20, gap_after=12)
 
         add(self.sep2, 1, gap_after=10)
         add(self.track_hdr, 22, gap_after=2)
         add(self.track_sub, 16, gap_after=4)
         add(self.graph, 50, gap_after=8)
         add(self.now_lbl, 16, gap_after=2)
-        add(self.freq_lbl, 16, gap_after=6)
+        add(self.freq_lbl, 16, gap_after=2)
+        self.auto_lbl.setHidden_(False)
+        add(self.auto_lbl, 16, gap_after=6)
+        add(self.calib_btn, 30, gap_after=10)
         add(self.session_lbl, 16, gap_after=2)
         add(self.alltime_lbl, 16, gap_after=0)
 
@@ -404,6 +424,7 @@ class Controller(NSObject):
         config.apply_preset(self.settings, name)
         self._sync_advanced()
         self._mark_custom()
+        self._relayout()  # the live Auto status line appears/disappears with Auto
         self._save()
 
     @objc.python_method
@@ -437,6 +458,7 @@ class Controller(NSObject):
             self.settings.scroll_stabilize_enabled = on
         elif tag == 8:
             self.settings.auto_adapt_enabled = on
+            self._relayout()  # show/hide the live Auto status line
         self._mark_custom()
         self._save()
 
@@ -455,6 +477,8 @@ class Controller(NSObject):
             self.settings.deadzone_px = v
         elif tag == 6:
             self.settings.click_lock_ms = v
+        elif tag == 9:
+            self.settings.auto_adapt_strength = v
         self._mark_custom()
         self._save_soon()
 
@@ -473,6 +497,7 @@ class Controller(NSObject):
         self.sld_lock.setFloatValue_(self.settings.click_lock_ms)
         self.sld_key.setFloatValue_(self.settings.debounce_ms)
         self.sld_click.setFloatValue_(self.settings.click_debounce_ms)
+        self.sld_autostr.setFloatValue_(self.settings.auto_adapt_strength)
 
     @objc.python_method
     def _mark_custom(self):
@@ -534,15 +559,23 @@ class Controller(NSObject):
 
         a = e.get_analysis()
         freq = a.get("freq_hz")
-        if freq and a.get("confidence", 0.0) >= 0.35:
+        clear = bool(freq) and a.get("confidence", 0.0) >= 0.35
+        if clear:
+            # Smooth the displayed frequency so it reads steadily, not jumpily.
+            self._freq_ema = freq if self._freq_ema is None else 0.7 * self._freq_ema + 0.3 * freq
             self.freq_lbl.setStringValue_(
-                f"Dominant tremor: {freq:.1f} Hz · {a.get('amp_rms_px', 0.0):.1f} px "
+                f"Dominant tremor: {self._freq_ema:.1f} Hz · {a.get('amp_rms_px', 0.0):.1f} px "
                 f"— {a.get('band', '')}"
             )
             self.freq_lbl.setTextColor_(BLUE)
         else:
+            self._freq_ema = None
             self.freq_lbl.setStringValue_("Dominant tremor: measuring… (keep moving the mouse)")
             self.freq_lbl.setTextColor_(MUTED)
+
+        self._update_auto_status(a)
+        if self._calibrating:
+            self._tick_calibration(a)
 
         self.session_lbl.setStringValue_(
             f"This session: steadied {e.events_smoothed:,} movements · "
@@ -561,6 +594,103 @@ class Controller(NSObject):
             f"{metrics.humanize_distance_px(jitter)} of shake removed · "
             f"{keys} shaky presses caught"
         )
+
+    @objc.python_method
+    def _update_auto_status(self, a):
+        """Show, live, what Auto mode is currently doing."""
+        if self._calibrating:
+            return  # calibration owns this label while it runs
+        if not self.settings.auto_adapt_enabled:
+            self.auto_lbl.setStringValue_("Tip: turn on Auto-adapt to track your tremor automatically.")
+            self.auto_lbl.setTextColor_(MUTED)
+            return
+        st = self._engine.get_adaptive_state()
+        cutoff = st.get("cutoff")
+        gate = st.get("gate", 0.0)
+        if cutoff is None or gate < 0.05:
+            self.auto_lbl.setStringValue_(
+                "Auto: watching your tremor — assistance scales in when it sees a clear shake."
+            )
+            self.auto_lbl.setTextColor_(MUTED)
+        else:
+            self.auto_lbl.setStringValue_(
+                f"Auto: tracking {gate * 100:.0f}% · smoothing @ {cutoff:.2f} Hz · "
+                f"hold-zone {st.get('deadzone', 0.0):.1f} px"
+            )
+            self.auto_lbl.setTextColor_(GREEN)
+
+    # --- "Measure my tremor" calibration ------------------------------------
+
+    def startCalibration_(self, sender):
+        if self._calibrating:
+            return
+        self._calibrating = True
+        self._calib_until = time.monotonic() + 5.0
+        self._calib_samples = []
+        self.calib_btn.setEnabled_(False)
+        self.auto_lbl.setHidden_(False)
+
+    @objc.python_method
+    def _tick_calibration(self, a):
+        remaining = self._calib_until - time.monotonic()
+        if a.get("freq_hz") and a.get("confidence", 0.0) >= 0.4:
+            self._calib_samples.append((a["freq_hz"], a.get("amp_rms_px", 0.0), a["confidence"]))
+        if remaining > 0:
+            self.auto_lbl.setStringValue_(
+                f"Measuring… hold your hand as you naturally would — {remaining:.0f}s"
+            )
+            self.auto_lbl.setTextColor_(BLUE)
+        else:
+            self._finish_calibration()
+
+    @objc.python_method
+    def _finish_calibration(self):
+        self._calibrating = False
+        self.calib_btn.setEnabled_(True)
+        if not self.settings.auto_adapt_enabled:
+            self.auto_lbl.setHidden_(True)
+        samples = self._calib_samples
+        self._calib_samples = []
+        if len(samples) < 3:
+            self._calib_alert(
+                "Couldn't get a clear reading",
+                "I didn't see a steady tremor. Try again and keep your hand on the "
+                "mouse — small natural movement is fine.",
+                None,
+            )
+            return
+        freqs = sorted(s[0] for s in samples)
+        median_freq = freqs[len(freqs) // 2]
+        mean_amp = sum(s[1] for s in samples) / len(samples)
+        agg = {
+            "freq_hz": median_freq,
+            "amp_rms_px": mean_amp,
+            "confidence": max(s[2] for s in samples),
+        }
+        name, why = recommend_preset(agg)
+        self._calib_alert(
+            f"Measured ~{median_freq:.1f} Hz tremor",
+            f"{why}\n\nApply the {name} comfort level now?",
+            name,
+        )
+
+    @objc.python_method
+    def _calib_alert(self, title, body, apply_name):
+        from AppKit import NSAlert
+
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_(title)
+        alert.setInformativeText_(body)
+        if apply_name:
+            alert.addButtonWithTitle_(f"Apply {apply_name}")
+            alert.addButtonWithTitle_("Not now")
+        else:
+            alert.addButtonWithTitle_("OK")
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+        resp = alert.runModal()
+        # NSAlertFirstButtonReturn == 1000
+        if apply_name and resp == 1000:
+            self.applyPresetNamed_(apply_name)
 
     _save_pending = False
 

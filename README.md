@@ -147,10 +147,31 @@ dependency-free (no NumPy/SciPy):
    resolution, and compute a **confidence** score from how concentrated the
    spectrum is around that peak (a clean sinusoid spikes; broadband noise spreads).
 
-The result drives the on-screen readout and the **Auto** mode's adaptive
-dead-zone. The whole module is covered by unit tests that feed synthetic,
+The result drives the on-screen readout and, in **Auto** mode, a closed-loop
+controller. The whole module is covered by unit tests that feed synthetic,
 unevenly-sampled sinusoids (with and without deliberate drift) and assert the
 recovered frequency, amplitude, and confidence.
+
+### Auto mode: a closed-loop adaptive controller
+
+Rather than a single fixed setting, **Auto** ([`adaptive.py`](tremor_assist/adaptive.py))
+retunes the filter from the live estimate every event:
+
+- **Frequency → smoothing cutoff.** A first-order low-pass attenuates a
+  frequency `f` by roughly `cutoff / f`, so holding a *constant* tremor
+  attenuation means setting `min_cutoff = ratio · f_tremor`. A fast tremor
+  (10 Hz) is easy to separate from intentional motion (<2 Hz), so the cutoff
+  rises and you stay responsive; a slow tremor (4 Hz) sits near intent, so the
+  cutoff drops and it smooths harder.
+- **Amplitude → dead-zone + beta.** A bigger shake widens the hold-steady zone
+  and lowers `beta`, so a violent tremor jerk isn't mistaken for a deliberate flick.
+- **Confidence gating + time-constant glide.** When the tremor signal is weak or
+  absent, the controller blends back to your base settings instead of chasing
+  noise, and all changes ease in smoothly so nothing snaps.
+
+The control panel shows what Auto is doing live (effective cutoff, hold-zone, and
+how strongly it's engaged), and **"Measure my tremor"** runs a 5-second reading
+that recommends a comfort level for you.
 
 ## Architecture
 
@@ -160,16 +181,19 @@ tremor_assist/
                 (unit-tested, no platform deps)
   analysis.py   Dependency-free DSP: detrend → resample → windowed DFT →
                 dominant tremor frequency / amplitude / confidence
+  adaptive.py   Closed-loop Auto controller: frequency→cutoff, amplitude→
+                dead-zone/beta, confidence-gated, time-constant glide
   engine.py     Quartz CGEventTap: smooths motion, debounces keys/clicks,
                 stabilizes scroll, feeds the analyzer, drives Auto adaptation
   config.py     Settings dataclass, JSON persistence, presets (incl. Auto)
   ui.py         Native macOS (Cocoa/AppKit) control panel — comfort levels,
-                big on/off button, live frequency readout, optional fine-tuning
+                live frequency readout, Auto status, "measure my tremor"
   __main__.py   GUI / headless entry point
 TremorAssist.app  Double-clickable launcher bundle
 tests/
   test_one_euro.py   filter, dead-zone behavior
   test_analysis.py   frequency/amplitude recovery from synthetic tremor
+  test_adaptive.py   Auto control law + preset recommendation
   test_scroll.py     scroll-reversal suppression
   test_config.py     settings persistence + presets
   test_metrics.py    session history aggregation
@@ -198,7 +222,7 @@ The filter and DSP cores are pure Python, so the suite runs on any platform:
 
 ```bash
 .venv/bin/python -m pip install pytest ruff
-.venv/bin/python -m pytest        # 33 tests
+.venv/bin/python -m pytest        # 47 tests
 .venv/bin/ruff check .            # lint
 ```
 
