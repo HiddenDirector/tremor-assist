@@ -39,11 +39,6 @@ def _smoothing_alpha(cutoff: float, dt: float) -> float:
 
 
 class OneEuroFilter:
-    """Speed-adaptive low-pass filter (Casiez et al., CHI 2012).
-
-    Lower ``min_cutoff`` smooths slow motion more (less jitter, more lag);
-    higher ``beta`` opens the filter faster during quick movement (less lag).
-    """
 
     def __init__(self, min_cutoff: float = 1.0, beta: float = 0.02, d_cutoff: float = 1.0) -> None:
         self.min_cutoff = float(min_cutoff)
@@ -76,8 +71,6 @@ class OneEuroFilter:
 
 
 class Deadzone2D:
-    """Holds the output still while the target stays within ``radius`` of the
-    anchor, then follows smoothly once it moves past it (no jump at the edge)."""
 
     def __init__(self, radius: float = 1.5) -> None:
         self.radius = float(radius)
@@ -104,15 +97,6 @@ class Deadzone2D:
 
 
 class ScrollStabilizer:
-    """Suppresses tremor-induced stray scroll ticks.
-
-    A shaking hand on a wheel or trackpad produces brief *reverse* ticks against
-    the direction you're actually scrolling, making the page judder. This drops a
-    small opposite-direction tick that lands within ``reversal_ms`` of genuine
-    scrolling the other way, while passing through real, sustained reversals.
-
-    Pure logic (no Quartz) so it can be unit-tested directly.
-    """
 
     def __init__(self, reversal_ms: float = 120.0, reversal_max: float = 1.0) -> None:
         self.reversal_ms = float(reversal_ms)
@@ -129,7 +113,6 @@ class ScrollStabilizer:
         self._last_time = None
 
     def filter(self, delta: float, now: float) -> float:
-        """Return the delta to emit (0.0 means swallow this tick)."""
         if delta == 0.0:
             return 0.0
         direction = 1 if delta > 0 else -1
@@ -140,9 +123,6 @@ class ScrollStabilizer:
             and (now - self._last_time) * 1000.0 < self.reversal_ms
             and abs(delta) <= self.reversal_max
         ):
-            # Small, quick reversal right after scrolling the other way: a tremor
-            # twitch. Swallow it but keep the clock running so a sustained
-            # reversal (several ticks) still gets through.
             self._last_time = now
             return 0.0
         self._last_dir = direction

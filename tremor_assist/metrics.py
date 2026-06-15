@@ -63,7 +63,6 @@ def all_time_totals(history: list[dict] | None = None) -> dict:
 
 
 def humanize_distance_px(px: float) -> str:
-    # Rough: ~100 px ≈ 1 inch on a typical display.
     inches = px / 100.0
     if inches < 12:
         return f"{inches:.0f} in"

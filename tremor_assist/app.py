@@ -188,7 +188,6 @@ def main():
     controller = Controller.alloc().initWithSettings_(settings)
     delegate = AppDelegate.alloc().initWithController_(controller)
     app.setDelegate_(delegate)
-    # NSApplication holds its delegate weakly; keep strong refs alive here.
     _KEEP_ALIVE.extend([controller, delegate])
 
     controller.show()

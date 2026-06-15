@@ -113,8 +113,6 @@ class TremorEngine:
     def _run(self) -> None:
         self._run_loop = Quartz.CFRunLoopGetCurrent()
 
-        # Pointer tap needs Accessibility; keyboard tap needs Input Monitoring.
-        # Keep them separate so one works when only one permission is granted.
         mouse_mask = _event_mask(*_MOUSE_MOVE_TYPES, *_MOUSE_DOWN_TYPES, _SCROLL_TYPE)
         self._mouse_tap, self._mouse_source = self._make_tap(mouse_mask)
         self._key_tap, self._key_source = self._make_tap(_event_mask(_KEY_DOWN_TYPE))
@@ -179,8 +177,6 @@ class TremorEngine:
         loc = Quartz.CGEventGetLocation(event)
         now = time.monotonic()
 
-        # Freeze the aim point for a moment around a click so the tremor-jerk
-        # during the press doesn't drag the cursor off target.
         if s.click_lock_enabled and self._lock_pos is not None and now < self._lock_until:
             self._set_output(event, self._lock_pos[0], self._lock_pos[1])
             return event
@@ -191,13 +187,9 @@ class TremorEngine:
             self._deadzone.reset()
             return event
 
-        # Feed the raw path to the tremor analyzer (frequency/amplitude estimate).
         self._analyzer.add(now, loc.x, loc.y)
         analysis = self._analyzer.analyze(now)
 
-        # Pick effective filter / dead-zone parameters. Auto mode runs a closed
-        # loop that retunes them from the live tremor estimate; otherwise use the
-        # user's chosen values directly.
         if s.auto_adapt_enabled:
             dt = (now - self._last_move_t) if self._last_move_t is not None else 1.0 / 120.0
             cutoff, beta, dz = self._adaptive.update(
@@ -252,12 +244,9 @@ class TremorEngine:
         return event
 
     def get_analysis(self) -> dict:
-        """Latest tremor estimate. Safe to call from the UI thread."""
         return self._analyzer.peek()
 
     def get_adaptive_state(self) -> dict:
-        """What Auto mode is currently doing (effective params + blend). Safe to
-        call from the UI thread."""
         st = self._adaptive.state()
         st["active"] = self.settings.auto_adapt_enabled
         return st
@@ -284,8 +273,6 @@ class TremorEngine:
             return None
         self._last_click[event_type] = now
 
-        # Anchor the click at the current (stabilized) cursor position and lock
-        # the cursor there briefly so the click lands where it was aimed.
         if s.click_lock_enabled:
             pos = self._last_output or (
                 lambda p: (p.x, p.y)

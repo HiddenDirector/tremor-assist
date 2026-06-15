@@ -1,4 +1,3 @@
-"""Native macOS (AppKit) control panel for TremorAssist."""
 
 from __future__ import annotations
 
@@ -37,8 +36,8 @@ from . import config, metrics
 from .adaptive import recommend_preset
 from .config import Settings
 
-W = 470          # window width
-M = 24           # outer margin
+W = 470
+M = 24
 INNER = W - 2 * M
 
 ACCESS_URL = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
@@ -154,7 +153,7 @@ class Controller(NSObject):
         self._radios = {}
         self._sliders = {}
         self._checks = {}
-        self._freq_ema = None       # smoothed frequency for a steady readout
+        self._freq_ema = None
         self._calibrating = False
         self._calib_until = 0.0
         self._calib_samples = []
@@ -296,7 +295,7 @@ class Controller(NSObject):
     @objc.python_method
     def _sep(self):
         box = NSBox.alloc().initWithFrame_(NSMakeRect(0, 0, INNER, 1))
-        box.setBoxType_(2)  # NSBoxSeparator
+        box.setBoxType_(2)
         return box
 
     @objc.python_method
@@ -327,7 +326,7 @@ class Controller(NSObject):
 
     @objc.python_method
     def _relayout(self):
-        items = []  # (view, top, height)
+        items = []
         top = 20
 
         def add(view, h, gap_after=8, x=M, w=INNER):
@@ -424,7 +423,7 @@ class Controller(NSObject):
         config.apply_preset(self.settings, name)
         self._sync_advanced()
         self._mark_custom()
-        self._relayout()  # the live Auto status line appears/disappears with Auto
+        self._relayout()
         self._save()
 
     @objc.python_method
@@ -458,7 +457,7 @@ class Controller(NSObject):
             self.settings.scroll_stabilize_enabled = on
         elif tag == 8:
             self.settings.auto_adapt_enabled = on
-            self._relayout()  # show/hide the live Auto status line
+            self._relayout()
         self._mark_custom()
         self._save()
 
@@ -561,7 +560,6 @@ class Controller(NSObject):
         freq = a.get("freq_hz")
         clear = bool(freq) and a.get("confidence", 0.0) >= 0.35
         if clear:
-            # Smooth the displayed frequency so it reads steadily, not jumpily.
             self._freq_ema = freq if self._freq_ema is None else 0.7 * self._freq_ema + 0.3 * freq
             self.freq_lbl.setStringValue_(
                 f"Dominant tremor: {self._freq_ema:.1f} Hz · {a.get('amp_rms_px', 0.0):.1f} px "
@@ -597,9 +595,8 @@ class Controller(NSObject):
 
     @objc.python_method
     def _update_auto_status(self, a):
-        """Show, live, what Auto mode is currently doing."""
         if self._calibrating:
-            return  # calibration owns this label while it runs
+            return
         if not self.settings.auto_adapt_enabled:
             self.auto_lbl.setStringValue_("Tip: turn on Auto-adapt to track your tremor automatically.")
             self.auto_lbl.setTextColor_(MUTED)
@@ -619,7 +616,6 @@ class Controller(NSObject):
             )
             self.auto_lbl.setTextColor_(GREEN)
 
-    # --- "Measure my tremor" calibration ------------------------------------
 
     def startCalibration_(self, sender):
         if self._calibrating:
@@ -688,7 +684,6 @@ class Controller(NSObject):
             alert.addButtonWithTitle_("OK")
         NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
         resp = alert.runModal()
-        # NSAlertFirstButtonReturn == 1000
         if apply_name and resp == 1000:
             self.applyPresetNamed_(apply_name)
 
@@ -711,7 +706,6 @@ class Controller(NSObject):
         self._save()
 
     def windowShouldClose_(self, sender):
-        # Hide to the menu bar; the app keeps running. ⌘Q quits.
         self.window.orderOut_(None)
         self._save()
         return False

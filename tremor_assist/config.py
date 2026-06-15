@@ -13,12 +13,12 @@ class Settings:
     enabled: bool = True
 
     smoothing_enabled: bool = True
-    min_cutoff: float = 1.0      # lower = more smoothing of slow movement
-    beta: float = 0.02           # higher = less lag during fast flicks
+    min_cutoff: float = 1.0
+    beta: float = 0.02
     d_cutoff: float = 1.0
 
     deadzone_enabled: bool = True
-    deadzone_px: float = 1.5     # hold cursor still within this radius
+    deadzone_px: float = 1.5
 
     debounce_enabled: bool = True
     debounce_ms: float = 60.0
@@ -27,18 +27,15 @@ class Settings:
     click_debounce_ms: float = 120.0
 
     click_lock_enabled: bool = True
-    click_lock_ms: float = 120.0  # freeze the aim point this long around a click
+    click_lock_ms: float = 120.0
 
-    # Scroll stabilization — drop tremor-induced stray reverse scroll ticks.
     scroll_stabilize_enabled: bool = True
-    scroll_reversal_ms: float = 120.0  # window in which a reverse tick is a twitch
-    scroll_reversal_max: float = 1.0   # only swallow reversals up to this size
+    scroll_reversal_ms: float = 120.0
+    scroll_reversal_max: float = 1.0
 
-    # Adaptive assistance — widen the hold-steady dead-zone toward the measured
-    # tremor amplitude in real time. Never narrows below the manual setting.
     auto_adapt_enabled: bool = False
-    auto_adapt_strength: float = 1.0   # 0 = off, 1 = match measured tremor, 2 = 2x
-    auto_adapt_max_px: float = 8.0     # hard ceiling on the adaptive dead-zone
+    auto_adapt_strength: float = 1.0
+    auto_adapt_max_px: float = 8.0
 
 
 PRESETS: dict[str, dict] = {

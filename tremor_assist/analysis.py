@@ -1,31 +1,9 @@
-"""Tremor signal analysis.
-
-Estimates the *dominant tremor frequency* and amplitude from the live pointer
-signal. Pathological tremor is an oscillation in a fairly narrow band:
-
-* Parkinsonian rest tremor   ~3–6 Hz
-* Essential / action tremor  ~6–12 Hz
-* Physiologic tremor         ~8–12 Hz
-
-Deliberate aiming, by contrast, is low-frequency drift. So we can separate
-tremor from intent by detrending the recent pointer path (removing the slow
-deliberate component) and looking for a concentrated spectral peak in the
-3–14 Hz band.
-
-The math here is deliberately dependency-free (no numpy): a least-squares
-detrend, a Hann window, and a direct DFT evaluated on a frequency grid. Mouse
-events are not uniformly sampled, so the signal is first linearly resampled
-onto a uniform time grid.
-
-This module is pure Python and fully unit-testable without macOS/Quartz.
-"""
 
 from __future__ import annotations
 
 import math
 from collections import deque
 
-# Tremor search band (Hz). Below this is deliberate movement; above is noise.
 FMIN = 3.0
 FMAX = 14.0
 FSTEP = 0.25
@@ -33,7 +11,6 @@ RESAMPLE_HZ = 120.0
 
 
 def _classify(freq: float | None) -> str:
-    """Plain-language band label. Informational, **not** a diagnosis."""
     if freq is None:
         return "—"
     if freq < 3.0:
@@ -46,8 +23,6 @@ def _classify(freq: float | None) -> str:
 
 
 def _detrend(values: list[float]) -> list[float]:
-    """Subtract the least-squares line — removes deliberate slow movement so
-    only the oscillation remains."""
     n = len(values)
     if n < 2:
         return [0.0] * n
@@ -71,7 +46,6 @@ def _hann(n: int) -> list[float]:
 
 
 def _resample_uniform(ts: list[float], vs: list[float], fs: float) -> list[float]:
-    """Linear-interpolate an unevenly-sampled signal onto a uniform grid."""
     span = ts[-1] - ts[0]
     n_out = int(span * fs)
     if n_out < 4:
@@ -95,7 +69,6 @@ def _resample_uniform(ts: list[float], vs: list[float], fs: float) -> list[float
 
 
 def _spectrum(sig: list[float], fs: float):
-    """Direct DFT power on the tremor frequency grid. Returns (freqs, powers)."""
     n = len(sig)
     win = _hann(n)
     wsig = [s * w for s, w in zip(sig, win)]
@@ -117,12 +90,6 @@ def _spectrum(sig: list[float], fs: float):
 
 
 class TremorAnalyzer:
-    """Rolling estimator of dominant tremor frequency, amplitude and confidence.
-
-    Feed raw pointer samples with :meth:`add`; read the latest estimate with
-    :meth:`analyze` (results are cached and recomputed at most every
-    ``recompute_every`` seconds, so it is cheap to poll from the UI loop).
-    """
 
     def __init__(
         self,
@@ -160,9 +127,6 @@ class TremorAnalyzer:
             self._y.popleft()
 
     def analyze(self, now: float | None = None) -> dict:
-        """Recompute the estimate (throttled). Call only from the thread that
-        owns :meth:`add` — i.e. the engine's event-tap thread — since it reads
-        the sample buffers. Other threads should use :meth:`peek`."""
         if now is None:
             now = self._t[-1] if self._t else 0.0
         if now - self._last_compute < self.recompute_every:
@@ -172,12 +136,8 @@ class TremorAnalyzer:
         return self._cached
 
     def peek(self) -> dict:
-        """Return the most recent estimate without recomputing or touching the
-        sample buffers. Thread-safe to call from the UI/main thread (the cached
-        dict is replaced atomically by :meth:`analyze`)."""
         return self._cached
 
-    # -- internals -----------------------------------------------------------
 
     def _compute(self) -> dict:
         ts = list(self._t)
@@ -192,7 +152,6 @@ class TremorAnalyzer:
         xs = _detrend(xs)
         ys = _detrend(ys)
 
-        # Total oscillation amplitude (deliberate drift already removed).
         var_x = sum(v * v for v in xs) / len(xs)
         var_y = sum(v * v for v in ys) / len(ys)
         amp_rms = math.sqrt(var_x + var_y)
@@ -207,8 +166,6 @@ class TremorAnalyzer:
 
         peak_i = max(range(len(power)), key=lambda i: power[i])
         freq = _parabolic_peak(fx, power, peak_i)
-        # Confidence = how concentrated the spectrum is around the peak. A pure
-        # sinusoid spikes (high); broadband noise spreads out (low).
         peak_mass = power[peak_i]
         if 0 < peak_i < len(power) - 1:
             peak_mass += power[peak_i - 1] + power[peak_i + 1]
@@ -223,8 +180,6 @@ class TremorAnalyzer:
 
 
 def _parabolic_peak(freqs: list[float], powers: list[float], i: int) -> float:
-    """Sub-bin peak location via parabolic interpolation of the 3 points
-    around the spectral maximum (sharper than the raw grid resolution)."""
     if i <= 0 or i >= len(powers) - 1:
         return freqs[i]
     a, b, c = powers[i - 1], powers[i], powers[i + 1]
