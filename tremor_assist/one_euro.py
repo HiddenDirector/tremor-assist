@@ -147,3 +147,36 @@ class OneEuroFilter2D:
 
     def filter(self, x: float, y: float, timestamp: float) -> tuple[float, float]:
         return self._fx.filter(x, timestamp), self._fy.filter(y, timestamp)
+
+
+def _native():
+    try:
+        from . import native
+    except Exception:
+        return None
+    return native if native.CORE_AVAILABLE else None
+
+
+def make_filter2d(min_cutoff: float = 1.0, beta: float = 0.02, d_cutoff: float = 1.0):
+    n = _native()
+    if n is not None:
+        return n.NativeOneEuroFilter2D(min_cutoff, beta, d_cutoff)
+    return OneEuroFilter2D(min_cutoff, beta, d_cutoff)
+
+
+def make_deadzone(radius: float = 1.5):
+    n = _native()
+    if n is not None:
+        return n.NativeDeadzone2D(radius)
+    return Deadzone2D(radius)
+
+
+def make_scroll(reversal_ms: float = 120.0, reversal_max: float = 1.0):
+    n = _native()
+    if n is not None:
+        return n.NativeScrollStabilizer(reversal_ms, reversal_max)
+    return ScrollStabilizer(reversal_ms, reversal_max)
+
+
+def native_backend() -> str:
+    return "native (C/Swift)" if _native() is not None else "python"

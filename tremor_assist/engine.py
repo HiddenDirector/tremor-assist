@@ -10,7 +10,7 @@ import Quartz
 from .adaptive import AdaptiveController
 from .analysis import TremorAnalyzer
 from .config import Settings
-from .one_euro import Deadzone2D, OneEuroFilter2D, ScrollStabilizer
+from .one_euro import make_deadzone, make_filter2d, make_scroll
 
 _MOUSE_MOVE_TYPES = {
     Quartz.kCGEventMouseMoved,
@@ -39,9 +39,9 @@ class TremorEngine:
         self.settings = settings
         self._on_status = on_status or (lambda _msg: None)
 
-        self._filter = OneEuroFilter2D(settings.min_cutoff, settings.beta, settings.d_cutoff)
-        self._deadzone = Deadzone2D(settings.deadzone_px)
-        self._scroll = ScrollStabilizer(settings.scroll_reversal_ms, settings.scroll_reversal_max)
+        self._filter = make_filter2d(settings.min_cutoff, settings.beta, settings.d_cutoff)
+        self._deadzone = make_deadzone(settings.deadzone_px)
+        self._scroll = make_scroll(settings.scroll_reversal_ms, settings.scroll_reversal_max)
         self._analyzer = TremorAnalyzer()
         self._adaptive = AdaptiveController(deadzone_max=settings.auto_adapt_max_px)
         self._last_move_t: float | None = None
