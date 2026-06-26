@@ -3,6 +3,24 @@
 All notable changes to TremorAssist are documented here. This project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.0]
+
+### Added
+- **Native backend (C + Swift)** to take the per-event hot path off the Python
+  interpreter — lower latency and far less jitter in games.
+  - `native/tremor_core.c`: One Euro Filter, dead-zone and scroll stabilizer in
+    portable C; loaded from Python via `ctypes` (`tremor_assist/native.py`).
+  - `native/tremor_engine.swift`: a `CGEventTap` engine that owns the tap and
+    run loop and calls the C core inline — the per-event path never takes the GIL.
+  - `one_euro.make_filter2d/make_deadzone/make_scroll` pick the native core when
+    `native/build/` is present and fall back to pure Python otherwise.
+  - Parity tests assert the C output matches the Python reference to 1e-9, plus
+    a `native/bench.py` throughput benchmark (~2.5–3× on the C core via ctypes).
+
+### Changed
+- `TremorEngine` now builds its filters through the `make_*` factories, so it
+  uses the native backend automatically when available.
+
 ## [0.3.0]
 
 ### Added

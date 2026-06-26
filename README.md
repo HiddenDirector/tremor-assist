@@ -84,6 +84,37 @@ The `TremorAssist.app` in the repo root is a dev launcher (it reuses the project
 
 The shippable build lands in `dist/`. Drag it to `/Applications` and you're set.
 
+## Native backend (C + Swift)
+
+The filter math used to run in Python on every mouse event. That's the worst
+possible place for it: each event crosses into the interpreter and takes the
+GIL, which adds latency and — worse for gaming — *jitter*, so the smoothing
+itself stutters. So the hot path now lives in compiled code:
+
+- **`native/tremor_core.c`** — the One Euro Filter, hold-steady dead-zone, and
+  scroll stabilizer in portable, dependency-free C. Same math as the Python
+  version (there are parity tests asserting they agree to 1e-9), just compiled.
+- **`native/tremor_engine.swift`** — a macOS `CGEventTap` engine that owns the
+  tap and its run loop on a dedicated thread and calls the C core *inline*. On
+  this path a mouse event is smoothed entirely in native code and **never enters
+  Python**, so there's no GIL in the per-event loop at all.
+
+Python still runs the Cocoa UI and pushes config down; it's just out of the
+input path. The pure-Python implementation is kept as a fallback — if the native
+libraries aren't built, everything still works, just slower.
+
+Build the native libs:
+
+```bash
+./native/build.sh          # -> native/build/libtremorcore.dylib + libtremorengine.dylib
+.venv/bin/python native/bench.py
+```
+
+The C core alone is ~2.5–3× faster than Python *through the ctypes boundary*;
+the Swift tap removes that boundary too, so the real in-game path is faster
+still. If the libs are absent, `one_euro.make_*` transparently returns the
+Python versions.
+
 ## What's actually going on under the hood
 
 Skip this unless you're curious — you don't need it to use the app.
