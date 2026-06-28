@@ -349,7 +349,7 @@ class Controller(NSObject):
         add(self.sep1, 1, gap_after=12)
         add(self.comfort_hdr, 22, gap_after=2)
         add(self.comfort_sub, 16, gap_after=8)
-        for name in ("Mild", "Moderate", "Strong", "Off"):
+        for name in PRESET_ORDER:
             add(self._radios[name], 26, gap_after=4)
         top += 6
         self.adv_toggle.setTitle_(
